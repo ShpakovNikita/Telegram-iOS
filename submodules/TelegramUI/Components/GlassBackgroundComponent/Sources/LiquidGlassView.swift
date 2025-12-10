@@ -105,6 +105,14 @@ public final class LiquidGlassView: MTKView {
         }
     }
     
+    override public func draw(_ layer: CALayer, in ctx: CGContext) {
+        if LiquidGlassGlobalContext.shared.isCapturing {
+            // Be transparent during snapshot to avoid recursive reflection
+            return
+        }
+        super.draw(layer, in: ctx)
+    }
+
     override public func draw(_ rect: CGRect) {
         guard let drawable = self.currentDrawable,
               let renderPassDescriptor = self.currentRenderPassDescriptor,

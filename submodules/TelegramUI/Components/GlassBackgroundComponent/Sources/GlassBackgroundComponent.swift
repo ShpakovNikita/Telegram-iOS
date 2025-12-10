@@ -302,6 +302,7 @@ public class GlassBackgroundView: UIView {
     }
     
     private let backgroundNode: NavigationBackgroundNode?
+    private let liquidGlassView: LiquidGlassView?
     
     private let nativeView: UIVisualEffectView?
     private let nativeViewClippingContext: ClippingShapeContext?
@@ -329,9 +330,11 @@ public class GlassBackgroundView: UIView {
     public static var useCustomGlassImpl: Bool = false
     
     public override init(frame: CGRect) {
+        GlassBackgroundView.useCustomGlassImpl = true
         if #available(iOS 26.0, *), !GlassBackgroundView.useCustomGlassImpl {
             self.backgroundNode = nil
-            
+            self.liquidGlassView = nil
+
             let glassEffect = UIGlassEffect(style: .regular)
             glassEffect.isInteractive = false
             let nativeView = UIVisualEffectView(effect: glassEffect)
@@ -348,12 +351,16 @@ public class GlassBackgroundView: UIView {
         } else {
             let backgroundNode = NavigationBackgroundNode(color: .black, enableBlur: true, customBlurRadius: 8.0)
             self.backgroundNode = backgroundNode
+            
+            // Initialize LiquidGlassView for Metal-based effect
+            self.liquidGlassView = LiquidGlassView()
+            
             self.nativeView = nil
             self.nativeViewClippingContext = nil
             self.nativeParamsView = nil
-            self.foregroundView = UIImageView()
+            self.foregroundView = nil // UIImageView()
             
-            self.shadowView = UIImageView()
+            self.shadowView = nil // UIImageView()
         }
         
         self.maskContainerView = UIView()
@@ -377,6 +384,9 @@ public class GlassBackgroundView: UIView {
         }
         if let backgroundNode = self.backgroundNode {
             self.addSubview(backgroundNode.view)
+        }
+        if let liquidGlassView = self.liquidGlassView {
+            self.addSubview(liquidGlassView)
         }
         if let foregroundView = self.foregroundView {
             self.addSubview(foregroundView)
@@ -417,6 +427,16 @@ public class GlassBackgroundView: UIView {
                 transition.setFrame(view: nativeView, frame: nativeFrame)
             }
         }
+        
+        if let liquidGlassView = self.liquidGlassView {
+            transition.setFrame(view: liquidGlassView, frame: CGRect(origin: CGPoint(), size: size))
+            switch shape {
+            case let .roundedRect(cornerRadius):
+                liquidGlassView.cornerRadius = cornerRadius
+            }
+            liquidGlassView.tintColor = tintColor.color
+        }
+        
         if let backgroundNode = self.backgroundNode {
             backgroundNode.updateColor(color: .clear, forceKeepBlur: tintColor.color.alpha != 1.0, transition: transition.containedViewLayoutTransition)
             

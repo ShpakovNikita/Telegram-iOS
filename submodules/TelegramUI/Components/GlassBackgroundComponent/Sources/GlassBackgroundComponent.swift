@@ -352,7 +352,6 @@ public class GlassBackgroundView: UIView {
             let backgroundNode = NavigationBackgroundNode(color: .black, enableBlur: true, customBlurRadius: 8.0)
             self.backgroundNode = backgroundNode
             
-            // Initialize LiquidGlassView for Metal-based effect
             self.liquidGlassView = LiquidGlassView()
             
             self.nativeView = nil

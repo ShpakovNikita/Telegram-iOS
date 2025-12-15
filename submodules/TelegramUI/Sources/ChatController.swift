@@ -6771,6 +6771,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         
         self.didAppear = true
         
+        LiquidGlassGlobalContext.shared.contentProvider = self.chatDisplayNode
+        
         self.chatDisplayNode.historyNode.experimentalSnapScrollToItem = false
         self.chatDisplayNode.historyNode.canReadHistory.set(self.computedCanReadHistoryPromise.get())
         self.chatDisplayNode.historyNode.areContentAnimationsEnabled = true
@@ -7434,7 +7436,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
             saveInterfaceState: saveInterfaceState,
             f,
             completion: completion
-        )
+        
     }
     
     func updateItemNodesSelectionStates(animated: Bool) {

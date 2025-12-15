@@ -96,6 +96,8 @@ public final class TabBarComponent: Component {
             self.contextGestureContainerView.isGestureEnabled = true
             
             if #available(iOS 26.0, *) {
+                self.nativeTabBar = nil
+                /*
                 let nativeTabBar = UITabBar()
                 self.nativeTabBar = nativeTabBar
                 
@@ -127,7 +129,7 @@ public final class TabBarComponent: Component {
                 nativeTabBar.standardAppearance.compactInlineLayoutAppearance.selected.titleTextAttributes = [
                     .foregroundColor: itemColor,
                     .font: itemFont
-                ]
+                ]*/
             } else {
                 self.nativeTabBar = nil
             }

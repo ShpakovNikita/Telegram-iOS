@@ -62,6 +62,8 @@ public final class LiquidGlassGlobalContext: NSObject {
         self.isProcessing = false
     }
     
+    public weak var contentProvider: GlassContentProvider?
+    
     @objc private func update() {
         guard let anyView = self.activeViews.allObjects.first, let window = anyView.window else {
             return
@@ -72,6 +74,56 @@ public final class LiquidGlassGlobalContext: NSObject {
         }
         
         let views = self.activeViews.allObjects
+        
+        // Try Content Provider first (Subtree Rasterization)
+        if let provider = self.contentProvider {
+            let layer = provider.contentNode.layer
+            
+            // Check if contents is a CGImage
+            if let contents = layer.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID {
+                let image = contents as! CGImage
+                
+                let providerFrame = provider.contentNode.view.convert(provider.contentNode.bounds, to: nil)
+                
+                self.isProcessing = true
+                let captureGLContext = self
+                
+                self.queue.async {
+                    var newTexture: MTLTexture?
+                    if let textureLoader = captureGLContext.textureLoader {
+                        do {
+                            // Load directly from the cached rasterized layer content
+                            // Usage: ShaderRead only. No mipmaps needed for glass usually.
+                            let options: [MTKTextureLoader.Option: Any] = [
+                                .textureUsage: MTLTextureUsage.shaderRead.rawValue,
+                                .SRGB: false,
+                                .generateMipmaps: false
+                            ]
+                            newTexture = try textureLoader.newTexture(cgImage: image, options: options)
+                        } catch {
+                            print("LiquidGlassGlobalContext Provider Error: \(error)")
+                        }
+                    }
+                    
+                    DispatchQueue.main.async {
+                        captureGLContext.isProcessing = false
+                        
+                        if let newTexture = newTexture {
+                            captureGLContext.texture = newTexture
+                            // The global frame corresponds to the provider's frame on screen
+                            captureGLContext.globalFrame = providerFrame
+                            
+                            for view in views {
+                                view.setNeedsDisplay()
+                            }
+                        }
+                    }
+                }
+                return
+            }
+        }
+        
+        // Fallback: Snapshot strategy
         var unionRect: CGRect?
         
         for view in views {
@@ -94,7 +146,7 @@ public final class LiquidGlassGlobalContext: NSObject {
         
         self.queue.async {
             // Optimization: 0.5 scale
-            let captureScale: CGFloat = 0.5
+            let captureScale: CGFloat = 0.75
             
             let format = UIGraphicsImageRendererFormat()
             format.opaque = false

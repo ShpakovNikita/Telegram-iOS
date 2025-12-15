@@ -152,7 +152,7 @@ private final class PendingSwitchToChatLocation {
     }
 }
 
-class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
+class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate, GlassContentProvider {
     let context: AccountContext
     private(set) var chatLocation: ChatLocation
     private var chatLocationContextHolder: Atomic<ChatLocationContextHolder?>
@@ -799,6 +799,13 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
                 return 0.0
             }
         }
+        
+        self.enableSubtreeRasterization()
+    }
+    
+    public var contentNode: ASDisplayNode {
+        return self
+    }
         
         (self.view as? ChatControllerNodeView)?.hitTestImpl = { [weak self] point, event in
             return self?.hitTest(point, with: event)

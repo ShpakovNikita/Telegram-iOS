@@ -6,6 +6,7 @@ import Display
 
 public final class LiquidGlassGlobalContext: NSObject {
     public static let shared = LiquidGlassGlobalContext()
+    public static let useMainThreadRendering = true
     
     private var timer: CADisplayLink?
     private var activeViews = NSHashTable<LiquidGlassView>.weakObjects()
@@ -62,34 +63,8 @@ public final class LiquidGlassGlobalContext: NSObject {
         self.isProcessing = false
     }
     
-    @objc private func update() {
-        guard let anyView = self.activeViews.allObjects.first, let window = anyView.window else {
-            return
-        }
-        
-        if self.isProcessing {
-            return
-        }
-        
-        let views = self.activeViews.allObjects
-        var unionRect: CGRect?
-        
-        for view in views {
-            let viewFrameInWindow = view.convert(view.bounds, to: window)
-            if let current = unionRect {
-                unionRect = current.union(viewFrameInWindow)
-            } else {
-                unionRect = viewFrameInWindow
-            }
-        }
-        
-        guard var captureRect = unionRect else { return }
-        
-        captureRect = captureRect.intersection(window.bounds)
-        if captureRect.isEmpty { return }
-        
+    private func drawInBackgroundThread(captureRect: CGRect, window: UIWindow) {
         self.isProcessing = true
-        
         let captureGLContext = self
         
         self.queue.async {
@@ -143,11 +118,115 @@ public final class LiquidGlassGlobalContext: NSObject {
                     captureGLContext.texture = newTexture
                     captureGLContext.globalFrame = captureRect
                     
-                    for view in views {
+                    for view in self.activeViews.allObjects {
                         view.setNeedsDisplay()
                     }
                 }
             }
+        }
+    }
+    
+    private var reusableContext: CGContext?
+    private var reusableContextSize: CGSize = .zero
+    
+    private func drawInMainThread(captureRect: CGRect, window: UIWindow) {
+        self.isProcessing = true
+        let captureScale: CGFloat = 0.5
+        let bufferWidth = Int(captureRect.width * captureScale)
+        let bufferHeight = Int(captureRect.height * captureScale)
+        
+        if bufferWidth <= 0 || bufferHeight <= 0 {
+            self.isProcessing = false
+            return
+        }
+        
+        let targetSize = CGSize(width: bufferWidth, height: bufferHeight)
+        
+        if self.reusableContextSize != targetSize || self.reusableContext == nil {
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+            
+            self.reusableContext = CGContext(data: nil,
+                                           width: bufferWidth,
+                                           height: bufferHeight,
+                                           bitsPerComponent: 8,
+                                           bytesPerRow: bufferWidth * 4,
+                                           space: colorSpace,
+                                           bitmapInfo: bitmapInfo)
+            
+            self.reusableContext?.translateBy(x: 0, y: CGFloat(bufferHeight))
+            self.reusableContext?.scaleBy(x: 1.0, y: -1.0)
+            self.reusableContext?.scaleBy(x: captureScale, y: captureScale)
+            self.reusableContextSize = targetSize
+        }
+        
+        guard let context = self.reusableContext else {
+            self.isProcessing = false
+            return
+        }
+        
+        context.clear(CGRect(origin: .zero, size: targetSize))
+        
+        context.saveGState()
+        context.translateBy(x: -captureRect.origin.x, y: -captureRect.origin.y)
+        window.layer.render(in: context)
+        context.restoreGState()
+        
+        if let originalImage = context.makeImage(), let textureLoader = self.textureLoader {
+            do {
+                let options: [MTKTextureLoader.Option: Any] = [
+                    .textureUsage: MTLTextureUsage.shaderRead.rawValue,
+                    .SRGB: false,
+                    .generateMipmaps: false
+                ]
+                let newTexture = try textureLoader.newTexture(cgImage: originalImage, options: options)
+                
+                self.texture = newTexture
+                self.globalFrame = captureRect
+                
+                for view in self.activeViews.allObjects {
+                    view.setNeedsDisplay()
+                }
+            } catch {
+                print("LiquidGlassGlobalContext Error: \(error)")
+            }
+        }
+        
+        self.isProcessing = false
+    }
+    
+    @objc private func update() {
+        guard let anyView = self.activeViews.allObjects.first, let window = anyView.window else {
+            return
+        }
+        
+        if self.isProcessing {
+            return
+        }
+        
+        let views = self.activeViews.allObjects
+        var unionRect: CGRect?
+        
+        for view in views {
+            let viewFrameInWindow = view.convert(view.bounds, to: window)
+            if let current = unionRect {
+                unionRect = current.union(viewFrameInWindow)
+            } else {
+                unionRect = viewFrameInWindow
+            }
+        }
+        
+        guard var captureRect = unionRect else { return }
+        
+        captureRect = captureRect.intersection(window.bounds)
+        if captureRect.isEmpty { return }
+        
+        
+        
+        if LiquidGlassGlobalContext.useMainThreadRendering {
+            drawInMainThread(captureRect: captureRect, window: window)
+        } else {
+            drawInBackgroundThread(captureRect: captureRect, window: window)
         }
     }
 }

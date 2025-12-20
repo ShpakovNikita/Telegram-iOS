@@ -759,7 +759,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         self.shadowNode = ChatMessageShadowNode()
 
         self.clippingNode = ChatMessageBubbleClippingNode()
-        self.clippingNode.clipsToBounds = false
+        self.clippingNode.clipsToBounds = true
 
         self.messageAccessibilityArea = AccessibilityAreaNode()
         
@@ -1068,7 +1068,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
             guard let strongSelf = self else {
                 return
             }
-            strongSelf.clippingNode.clipsToBounds = false
+            strongSelf.clippingNode.clipsToBounds = true
         })
 
         transition.vertical.animateOffsetAdditive(layer: self.clippingNode.layer, offset: textInput.backgroundView.frame.minY - self.clippingNode.frame.minY)
@@ -4562,7 +4562,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
             strongSelf.contentNodes = sortedContentNodes
         }
         
-        var shouldClipOnTransitions = true
+        // var shouldClipOnTransitions = true
         var contentNodeIndex = 0
         for (relativeFrame, properties, useContentOrigin, apply) in contentNodeFramesPropertiesAndApply {
             apply(animation, synchronousLoads, applyInfo)
@@ -4573,9 +4573,9 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
             
             let contentNode = strongSelf.contentNodes[contentNodeIndex]
             
-            if contentNode.disablesClipping {
+            /*if contentNode.disablesClipping {
                 shouldClipOnTransitions = false
-            }
+            }*/
             
             var effectiveContentOriginX = contentOrigin.x
             var effectiveContentOriginY = useContentOrigin ? contentOrigin.y : 0.0
@@ -4891,9 +4891,9 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
                     backgroundHighlightNode.updateLayout(size: backgroundFrame.size, transition: animation)
                 }
                 animation.animator.updatePosition(layer: strongSelf.clippingNode.layer, position: backgroundFrame.center, completion: nil)
-                strongSelf.clippingNode.clipsToBounds = shouldClipOnTransitions
+                strongSelf.clippingNode.clipsToBounds = true
                 animation.animator.updateBounds(layer: strongSelf.clippingNode.layer, bounds: CGRect(origin: CGPoint(x: backgroundFrame.minX, y: backgroundFrame.minY), size: backgroundFrame.size), completion: { [weak strongSelf] _ in
-                    strongSelf?.clippingNode.clipsToBounds = false
+                    strongSelf?.clippingNode.clipsToBounds = true
                 })
 
                 strongSelf.backgroundNode.updateLayout(size: backgroundFrame.size, transition: animation)

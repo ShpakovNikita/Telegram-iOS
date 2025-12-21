@@ -1,6 +1,7 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 load(
     "@build_bazel_rules_apple//apple:resources.bzl",
+    "apple_metal_library",
     "apple_resource_bundle",
     "apple_resource_group",
 )
@@ -8,12 +9,15 @@ load("//build-system/bazel-utils:plist_fragment.bzl",
     "plist_fragment",
 )
 
-filegroup(
-    name = "GlassBackgroundComponentMetalResources",
+apple_metal_library(
+    name = "GlassBackgroundComponentMetalLibrary",
     srcs = glob([
-        "MetalResources/**/*.*",
+        "MetalResources/**/*.metal",
     ]),
-    visibility = ["//visibility:public"],
+    copts = [
+        "-frecord-sources",
+        "-gline-tables-only",
+    ],
 )
 
 plist_fragment(
@@ -36,7 +40,7 @@ apple_resource_bundle(
         ":GlassBackgroundComponentBundleInfoPlist",
     ],
     resources = [
-        ":GlassBackgroundComponentMetalResources",
+        ":GlassBackgroundComponentMetalLibrary",
     ],
 )
 

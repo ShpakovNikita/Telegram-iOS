@@ -446,6 +446,7 @@ public final class WallpaperBackgroundNodeImpl: ASDisplayNode, WallpaperBackgrou
 
             self.contentNode = ASImageNode()
             self.contentNode.displaysAsynchronously = false
+            self.contentNode.displayWithoutProcessing = true
             self.contentNode.isUserInteractionEnabled = false
 
             super.init()
@@ -555,6 +556,7 @@ public final class WallpaperBackgroundNodeImpl: ASDisplayNode, WallpaperBackgrou
                     if self.cleanWallpaperNode == nil {
                         let cleanWallpaperNode = ASImageNode()
                         cleanWallpaperNode.displaysAsynchronously = false
+                        cleanWallpaperNode.displayWithoutProcessing = true
                         self.cleanWallpaperNode = cleanWallpaperNode
                         cleanWallpaperNode.frame = self.bounds
                         self.insertSubnode(cleanWallpaperNode, at: 0)
@@ -734,6 +736,56 @@ public final class WallpaperBackgroundNodeImpl: ASDisplayNode, WallpaperBackgrou
             
             self.view.addSubview(portalView.view)
             self.clipsToBounds = true
+            
+            NotificationCenter.default.addObserver(self, selector: #selector(self.willSnapshot), name: Notification.Name("LiquidGlassWillSnapshotNotification"), object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(self.didSnapshot), name: Notification.Name("LiquidGlassDidSnapshotNotification"), object: nil)
+        }
+        
+        private var snapshotView: UIImageView?
+        
+        @objc private func willSnapshot() {
+            guard let sourceView = self.portalView.sourceView else {
+                return
+            }
+            
+            // Optimization: Find the first meaningful image in the hierarchy instead of rendering
+            func findSnapshotImage(in view: UIView) -> UIImage? {
+                if !view.isHidden && view.alpha > 0.01 {
+                    if let contents = view.layer.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID {
+                        return UIImage(cgImage: contents as! CGImage)
+                    }
+                    if let imageView = view as? UIImageView, let image = imageView.image {
+                        return image
+                    }
+                }
+                
+                for subview in view.subviews {
+                    if let image = findSnapshotImage(in: subview) {
+                        return image
+                    }
+                }
+                return nil
+            }
+            
+            if let image = findSnapshotImage(in: sourceView) {
+                let snapshotView = UIImageView(image: image)
+                
+                if let window = self.view.window {
+                    let sourceRectInWindow = sourceView.convert(sourceView.bounds, to: window)
+                    let frameInSelf = self.view.convert(sourceRectInWindow, from: window)
+                    snapshotView.frame = frameInSelf
+                } else {
+                    snapshotView.frame = self.view.bounds
+                }
+                
+                self.snapshotView = snapshotView
+                self.view.addSubview(snapshotView)
+            }
+        }
+        
+        @objc private func didSnapshot() {
+            self.snapshotView?.removeFromSuperview()
+            self.snapshotView = nil
         }
 
         deinit {

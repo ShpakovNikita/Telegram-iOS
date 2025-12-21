@@ -491,7 +491,8 @@ public final class TabBarComponent: Component {
                                 itemContainer.addSubview(selectedItemComponentView)
                             }
                         } else {
-                            self.contextGestureContainerView.addSubview(itemComponentView)
+                            //self.contextGestureContainerView.addSubview(itemComponentView)
+                            self.backgroundView.addSubview(itemComponentView)
                         }
                     }
                     if self.nativeTabBar != nil {

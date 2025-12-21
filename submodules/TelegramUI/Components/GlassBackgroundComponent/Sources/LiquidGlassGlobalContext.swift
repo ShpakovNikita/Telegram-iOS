@@ -5,6 +5,9 @@ import MetalKit
 import Display
 
 public final class LiquidGlassGlobalContext: NSObject {
+    public static let willSnapshotNotification = Notification.Name("LiquidGlassWillSnapshotNotification")
+    public static let didSnapshotNotification = Notification.Name("LiquidGlassDidSnapshotNotification")
+    
     public static let shared = LiquidGlassGlobalContext()
     public static let useMainThreadRendering = true
     
@@ -131,7 +134,7 @@ public final class LiquidGlassGlobalContext: NSObject {
     
     private func drawInMainThread(captureRect: CGRect, window: UIWindow) {
         self.isProcessing = true
-        let captureScale: CGFloat = 0.5
+        let captureScale: CGFloat = 1.0
         let bufferWidth = Int(captureRect.width * captureScale)
         let bufferHeight = Int(captureRect.height * captureScale)
         
@@ -167,10 +170,30 @@ public final class LiquidGlassGlobalContext: NSObject {
         
         context.clear(CGRect(origin: .zero, size: targetSize))
         
+        // Hide glass views during capture to avoid capturing the glass itself and its content
+        let viewsToHide = self.activeViews.allObjects.compactMap { view -> UIView? in
+            if let superview = view.superview as? GlassBackgroundView {
+                return superview
+            }
+            return nil
+        }
+        
+        for view in viewsToHide {
+            view.isHidden = true
+        }
+        
         context.saveGState()
         context.translateBy(x: -captureRect.origin.x, y: -captureRect.origin.y)
+        
+        NotificationCenter.default.post(name: LiquidGlassGlobalContext.willSnapshotNotification, object: nil)
         window.layer.render(in: context)
+        NotificationCenter.default.post(name: LiquidGlassGlobalContext.didSnapshotNotification, object: nil)
+        
         context.restoreGState()
+        
+        for view in viewsToHide {
+            view.isHidden = false
+        }
         
         if let originalImage = context.makeImage(), let textureLoader = self.textureLoader {
             do {

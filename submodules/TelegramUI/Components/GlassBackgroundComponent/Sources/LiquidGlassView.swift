@@ -20,7 +20,11 @@ private struct LiquidGlassVertex {
 
 public final class LiquidGlassView: MTKView {
     private var commandQueue: MTLCommandQueue?
-    private var pipelineState: MTLRenderPipelineState?
+    private var composePipelineState: MTLRenderPipelineState?
+    private var blurHPipelineState: MTLRenderPipelineState?
+    private var blurVPipelineState: MTLRenderPipelineState?
+    private var intermediateTexturePass1: MTLTexture?
+    private var intermediateTexturePass2: MTLTexture?
     
     public var cornerRadius: CGFloat = 0.0 {
         didSet {
@@ -79,29 +83,46 @@ public final class LiquidGlassView: MTKView {
         }
         
         guard let vertexFunction = library.makeFunction(name: "liquid_glass_vertex"),
-              let fragmentFunction = library.makeFunction(name: "liquid_glass_fragment") else {
+              let composeFragmentFunction = library.makeFunction(name: "liquid_glass_compose"),
+              let blurHFunction = library.makeFunction(name: "liquid_glass_blur_horizontal"),
+              let blurVFunction = library.makeFunction(name: "liquid_glass_blur_vertical") else {
             print("Could not find shader functions")
             return
         }
         
-        let pipelineDescriptor = MTLRenderPipelineDescriptor()
-        pipelineDescriptor.vertexFunction = vertexFunction
-        pipelineDescriptor.fragmentFunction = fragmentFunction
-        pipelineDescriptor.colorAttachments[0].pixelFormat = self.colorPixelFormat
+        // Pass 1: Compose pipeline
+        let composeDescriptor = MTLRenderPipelineDescriptor()
+        composeDescriptor.vertexFunction = vertexFunction
+        composeDescriptor.fragmentFunction = composeFragmentFunction
+        composeDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm // Intermediate format
         
-        // Enable blending
-        pipelineDescriptor.colorAttachments[0].isBlendingEnabled = true
-        pipelineDescriptor.colorAttachments[0].rgbBlendOperation = .add
-        pipelineDescriptor.colorAttachments[0].alphaBlendOperation = .add
-        pipelineDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        pipelineDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        pipelineDescriptor.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
-        pipelineDescriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        // Pass 2: Horizontal blur pipeline, draws to texture pass2
+        let blurHDescriptor = MTLRenderPipelineDescriptor()
+        blurHDescriptor.vertexFunction = vertexFunction
+        blurHDescriptor.fragmentFunction = blurHFunction
+        blurHDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        
+        // Pass 3: Vertical blur pipeline, draws to screen
+        let blurVDescriptor = MTLRenderPipelineDescriptor()
+        blurVDescriptor.vertexFunction = vertexFunction
+        blurVDescriptor.fragmentFunction = blurVFunction
+        blurVDescriptor.colorAttachments[0].pixelFormat = self.colorPixelFormat
+        
+        // Enable blending for final pass
+        blurVDescriptor.colorAttachments[0].isBlendingEnabled = true
+        blurVDescriptor.colorAttachments[0].rgbBlendOperation = .add
+        blurVDescriptor.colorAttachments[0].alphaBlendOperation = .add
+        blurVDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        blurVDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        blurVDescriptor.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+        blurVDescriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         
         do {
-            self.pipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+            self.composePipelineState = try device.makeRenderPipelineState(descriptor: composeDescriptor)
+            self.blurHPipelineState = try device.makeRenderPipelineState(descriptor: blurHDescriptor)
+            self.blurVPipelineState = try device.makeRenderPipelineState(descriptor: blurVDescriptor)
         } catch {
-            print("Failed to create pipeline state: \(error)")
+            print("Failed to create pipeline states: \(error)")
         }
     }
     
@@ -115,17 +136,29 @@ public final class LiquidGlassView: MTKView {
 
     override public func draw(_ rect: CGRect) {
         guard let drawable = self.currentDrawable,
-              let renderPassDescriptor = self.currentRenderPassDescriptor,
-              let pipelineState = self.pipelineState,
+              let finalRenderPassDescriptor = self.currentRenderPassDescriptor,
+              let composePipelineState = self.composePipelineState,
+              let blurHPipelineState = self.blurHPipelineState,
+              let blurVPipelineState = self.blurVPipelineState,
               let commandQueue = self.commandQueue,
-              let commandBuffer = commandQueue.makeCommandBuffer(),
-              let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
+              let commandBuffer = commandQueue.makeCommandBuffer() else {
             return
         }
         
-        renderEncoder.setRenderPipelineState(pipelineState)
+        let width = Int(self.bounds.width * self.contentScaleFactor)
+        let height = Int(self.bounds.height * self.contentScaleFactor)
         
-        // Vertices for a full-quad
+        if self.intermediateTexturePass1?.width != width || self.intermediateTexturePass1?.height != height {
+            let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+            textureDescriptor.usage = [.renderTarget, .shaderRead]
+            self.intermediateTexturePass1 = self.device?.makeTexture(descriptor: textureDescriptor)
+            self.intermediateTexturePass2 = self.device?.makeTexture(descriptor: textureDescriptor)
+        }
+        
+        guard let intermediateTexturePass1 = self.intermediateTexturePass1,
+              let intermediateTexturePass2 = self.intermediateTexturePass2 else { return }
+        
+        // Vertices
         let vertices = [
             LiquidGlassVertex(position: simd_float4(-1, -1, 0, 1), texCoord: simd_float2(0, 1)),
             LiquidGlassVertex(position: simd_float4( 1, -1, 0, 1), texCoord: simd_float2(1, 1)),
@@ -133,8 +166,7 @@ public final class LiquidGlassView: MTKView {
             LiquidGlassVertex(position: simd_float4( 1,  1, 0, 1), texCoord: simd_float2(1, 0))
         ]
         
-        renderEncoder.setVertexBytes(vertices, length: vertices.count * MemoryLayout<LiquidGlassVertex>.stride, index: 0)
-        
+        // Uniforms Setup
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         self.tintColor?.getRed(&r, green: &g, blue: &b, alpha: &a)
         
@@ -150,25 +182,69 @@ public final class LiquidGlassView: MTKView {
                 Float(boundsInWindow.size.height / globalFrame.height)
             )
         }
-        
         var uniforms = LiquidGlassUniforms(
-            size: simd_float2(Float(self.bounds.width * self.contentScaleFactor), Float(self.bounds.height * self.contentScaleFactor)),
+            size: simd_float2(Float(width), Float(height)),
             tintColor: simd_float4(Float(r), Float(g), Float(b), Float(a)),
             cornerRadius: Float(self.cornerRadius * self.contentScaleFactor),
             padding: 0,
             screenRect: screenRectIdx
         )
         
-        renderEncoder.setVertexBytes(&uniforms, length: MemoryLayout<LiquidGlassUniforms>.stride, index: 1)
-        renderEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<LiquidGlassUniforms>.stride, index: 1)
-        
-        if let texture = LiquidGlassGlobalContext.shared.texture {
-            renderEncoder.setFragmentTexture(texture, index: 0)
+        // Helper to encode a pass
+        func encodePass(pipeline: MTLRenderPipelineState, 
+                        outputTexture: MTLTexture?, 
+                        outputPassDescriptor: MTLRenderPassDescriptor?, // Only one of outputTexture or outputPassDescriptor
+                        inputTexture: MTLTexture?, 
+                        clear: Bool) {
+            
+            var encoder: MTLRenderCommandEncoder?
+            
+            if let texture = outputTexture {
+                let passDescriptor = MTLRenderPassDescriptor()
+                passDescriptor.colorAttachments[0].texture = texture
+                passDescriptor.colorAttachments[0].loadAction = clear ? .clear : .dontCare
+                passDescriptor.colorAttachments[0].storeAction = .store
+                passDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+                encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor)
+            } else if let descriptor = outputPassDescriptor {
+                encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor)
+            }
+            
+            if let encoder = encoder {
+                encoder.setRenderPipelineState(pipeline)
+                encoder.setVertexBytes(vertices, length: vertices.count * MemoryLayout<LiquidGlassVertex>.stride, index: 0)
+                encoder.setVertexBytes(&uniforms, length: MemoryLayout<LiquidGlassUniforms>.stride, index: 1)
+                encoder.setFragmentBytes(&uniforms, length: MemoryLayout<LiquidGlassUniforms>.stride, index: 1)
+                
+                if let input = inputTexture {
+                    encoder.setFragmentTexture(input, index: 0)
+                }
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+                encoder.endEncoding()
+            }
         }
         
-        renderEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        // Pass 1: Compose, glass -> texture pass1
+        encodePass(pipeline: composePipelineState,
+                   outputTexture: intermediateTexturePass1, 
+                   outputPassDescriptor: nil, 
+                   inputTexture: LiquidGlassGlobalContext.shared.texture, 
+                   clear: true)
         
-        renderEncoder.endEncoding()
+        // Pass 2: Horizontal blur, texture pass1 -> texture pass2
+        encodePass(pipeline: blurHPipelineState,
+                   outputTexture: intermediateTexturePass2, 
+                   outputPassDescriptor: nil, 
+                   inputTexture: intermediateTexturePass1, 
+                   clear: false)
+                   
+        // Pass 3: Vertical blur, texture pass2 -> screen
+        encodePass(pipeline: blurVPipelineState,
+                   outputTexture: nil, 
+                   outputPassDescriptor: finalRenderPassDescriptor, 
+                   inputTexture: intermediateTexturePass2, 
+                   clear: false)
+        
         commandBuffer.present(drawable)
         commandBuffer.commit()
     }

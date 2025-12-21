@@ -34,14 +34,14 @@ float sdfRect(float2 center, float2 size, float2 p, float r) {
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
 
-float3 getNormal(float sd, float thickness) {
+float3 getNormal(float sd, float thickness, float direction) {
     float dx = dfdx(sd);
     float dy = dfdy(sd);
 
     float n_cos = max(thickness + sd, 0.0) / thickness;
     float n_sin = sqrt(1.0 - n_cos * n_cos);
 
-    return normalize(float3(dx * n_cos, dy * n_cos, n_sin));
+    return normalize(float3(direction * dx * n_cos, dy * n_cos, n_sin));
 }
 
 float height(float sd, float thickness) {
@@ -56,96 +56,199 @@ float height(float sd, float thickness) {
     return sqrt(thickness * thickness - x * x);
 }
 
-float4 gaussian_blur(texture2d<float> texture, sampler textureSampler, float2 uv, float radius) {
-    if (radius <= 0.0) {
-        return texture.sample(textureSampler, uv);
-    }
-    
-    float2 texelSize = float2(1.0 / texture.get_width(), 1.0 / texture.get_height());
-    float4 color = float4(0.0);
-    float totalWeight = 0.0;
-
-    int steps = int(radius);
-    if (steps > 10) steps = 10;
-    
-    float sigma = float(steps) / 2.0;
-    if (sigma < 1.0) sigma = 1.0;
-    
-    for (int x = -steps; x <= steps; x++) {
-        for (int y = -steps; y <= steps; y++) {
-            float2 offset = float2(float(x), float(y)) * texelSize;
-            float weight = exp(-(float(x*x + y*y)) / (2.0 * sigma * sigma));
-            
-            color += texture.sample(textureSampler, uv + offset) * weight;
-            totalWeight += weight;
-        }
-    }
-    
-    return color / totalWeight;
-}
-
 fragment float4 liquid_glass_fragment(VertexOut in [[stage_in]],
                                       texture2d<float> texture [[texture(0)]],
-                                      constant Uniforms &uniforms [[buffer(1)]]) {
+                                      constant Uniforms &uniforms [[buffer(1)]]);
+
+float4 glass_content_shade(float2 p,
+                   float2 size,
+                   float radius, 
+                   float thickness, 
+                   float index, 
+                   float base_height, 
+                   float4 color_base, 
+                   float color_mix, 
+                   constant Uniforms& uniforms, 
+                   texture2d<float> texture, 
+                   sampler textureSampler) {
+    float2 center = size * 0.5;
+    float2 rectHalfSize = (size * 0.5) - radius;
+    rectHalfSize = max(rectHalfSize, 0.0);
+    
+    float sd = sdfRect(center, rectHalfSize, p, radius);
+    
+    float3 normal = getNormal(sd, thickness, 1.0);
+    
+    float3 incident = float3(0.0, 0.0, -1.0);
+    float3 refract_vec = refract(incident, normal, 1.0/index);
+    float h = height(sd, thickness);
+    
+    float refract_length = (h + base_height) / dot(incident, refract_vec);
+    
+    float2 coord1 = p + refract_vec.xy * refract_length;
+    float2 distortedUV = coord1 / size;
+    float2 screenUV = uniforms.screenRect.xy + (distortedUV * uniforms.screenRect.zw);
+    
+    float4 bg_col = texture.sample(textureSampler, screenUV);
+    
+    return mix(bg_col, color_base, color_mix);
+}
+
+float4 glass_border_shade(float2 p,
+                   float2 size,
+                   float radius,
+                   float thickness,
+                   float index,
+                   float base_height,
+                   float4 color_base,
+                   float color_mix,
+                   constant Uniforms& uniforms,
+                   texture2d<float> texture,
+                   sampler textureSampler) {
+    float2 center = size * 0.5;
+    float2 rectHalfSize = (size * 0.5) - radius;
+    rectHalfSize = max(rectHalfSize, 0.0);
+    
+    float sd = sdfRect(center, rectHalfSize, p, radius);
+    if (sd > thickness)
+    {
+        return float4(0.0);
+    }
+    
+    float3 normal = getNormal(sd, thickness, -1.0);
+    
+    float3 incident = float3(0.0, 0.0, -1.0);
+    float3 refract_vec = refract(incident, normal, 1.0/index);
+    float h = height(sd, thickness);
+    
+    float refract_length = (h + base_height) / dot(incident, refract_vec);
+    
+    float2 coord1 = p + refract_vec.xy * refract_length;
+    float2 distortedUV = coord1 / size;
+    float2 screenUV = uniforms.screenRect.xy + (distortedUV * uniforms.screenRect.zw);
+    
+    float4 bg_col = texture.sample(textureSampler, screenUV);
+    float3 reflect_vec = reflect(incident, normal);
+    float c = clamp(abs(reflect_vec.x - reflect_vec.y), 0.0, 1.0);
+    
+    float4 targetColor = mix(bg_col, color_base, color_mix);
+    return float4(targetColor.rgb, c);
+}
+
+// Pass 1: Compose the raw glass effect (Refraction, Reflection, Lighting)
+fragment float4 liquid_glass_compose(VertexOut in [[stage_in]],
+                                      texture2d<float> texture [[texture(0)]],
+                                      constant Uniforms& uniforms [[buffer(1)]]) {
     
     constexpr sampler textureSampler(mag_filter::linear, min_filter::linear, address::clamp_to_edge);
     
     float2 size = uniforms.size;
     float2 p = in.texCoord * size;
     
-    float thickness = 18.0;
+    float thickness = 24.0;
     float index = 1.2;
     float base_height = thickness * 8.0;
-    float color_mix = 0.3;
-    float4 color_base = uniforms.tintColor; // Use tint color as base
-    
+    float color_mix = 0.85;
+    float4 color_base = uniforms.tintColor;
     float radius = uniforms.cornerRadius;
+    
+    float4 result = glass_content_shade(p, size, radius, thickness, index, base_height, color_base, color_mix, uniforms, texture, textureSampler);
+    
+    return result; 
+}
+
+// Pass 2: Horizontal Blur
+fragment float4 liquid_glass_blur_horizontal(VertexOut in [[stage_in]],
+                                             texture2d<float> texture [[texture(0)]],
+                                             constant Uniforms& uniforms [[buffer(1)]]) {
+    
+    constexpr sampler textureSampler(mag_filter::linear, min_filter::linear, address::clamp_to_edge);
+    
+    float2 size = uniforms.size;
+    float2 p = in.texCoord * size;
+    float radius = uniforms.cornerRadius;
+    
+    // Calculate SDF locally for variable blur
     float2 center = size * 0.5;
     float2 rectHalfSize = (size * 0.5) - radius;
-    
     rectHalfSize = max(rectHalfSize, 0.0);
-    
+    float4 sample = texture.sample(textureSampler, in.texCoord);
     float sd = sdfRect(center, rectHalfSize, p, radius);
     
-    float3 normal = getNormal(sd, thickness);
+    float blurFactor = 0.2 + smoothstep(0.0, -155.0, sd) * 0.8;
+    float blurRadius = 4.0 * blurFactor; // Max radius
     
-    float3 incident = float3(0.0, 0.0, -1.0);
-    float3 refract_vec = refract(incident, normal, 1.0/index);
-    float h = height(sd, thickness);
+    if (blurRadius < 1.0) {
+        return sample;
+    }
     
-    float refract_length = (h + base_height) / dot(float3(0.0, 0.0, -1.0), refract_vec);
+    float4 totalColor = float4(0.0);
+    float totalWeight = 0.0;
     
-    float2 coord1 = p + refract_vec.xy * refract_length;
+    // 7-tap 1D Gaussian (Horizontal)
+    for (float i = -3.0; i <= 3.0; i += 1.0) {
+        float offset = i * blurRadius;
+        float weight = exp(-(i*i) / 8.0); // Sigma^2 * 2 = 4.0 * 2 = 8.0
+        
+        float2 uvOffset = float2(offset / size.x, 0.0);
+        totalColor += texture.sample(textureSampler, in.texCoord + uvOffset) * weight;
+        totalWeight += weight;
+    }
     
-    float2 distortedUV = coord1 / size;
-    
-    float2 screenUV = uniforms.screenRect.xy + (distortedUV * uniforms.screenRect.zw);
-     
-    float blurRadius = 3.0; // Adjustable
-    float4 bg_col = gaussian_blur(texture, textureSampler, screenUV, blurRadius); // "Refract color"
-    
-    float alpha = smoothstep(0.0, -1.0, sd); // 0 at 0 distance, 1 at -1 distance (inside)
-    float mask = smoothstep(0.0, -1.5, sd); 
-    
-    float4 refract_color = bg_col;
-    float4 reflect_color = float4(0.0);
-    // float4 bg_col = bgImage(uv);
-    // bg_col.a = smoothstep(-4.,0.,sd);
-    
-    float4 refract_color = bg_col;
+    return totalColor / totalWeight;
+}
 
-    float3 reflect_vec = reflect(incident, normal);
-    float4 reflect_color = float4(0.0);
-
-    float c = clamp(abs(reflect_vec.x - reflect_vec.y), 0.0, 1.0);
-    reflect_color = float4(c, c, c, 0.0);
-
-    float mixFactor = (1.0 - normal.z) * 2.0;
-    float4 fragColor = mix(mix(refract_color, reflect_color, mixFactor), color_base, color_mix);
+// Pass 3: Vertical Blur
+fragment float4 liquid_glass_blur_vertical(VertexOut in [[stage_in]],
+                                           texture2d<float> texture [[texture(0)]],
+                                           constant Uniforms& uniforms [[buffer(1)]]) {
     
-    fragColor = clamp(fragColor, 0.0, 1.0);
+    constexpr sampler textureSampler(mag_filter::linear, min_filter::linear, address::clamp_to_edge);
     
-    //fragColor.a *= mask;
-    return fragColor;
-    //return fragColor;
+    float2 size = uniforms.size;
+    float2 p = in.texCoord * size;
+    float radius = uniforms.cornerRadius;
+    
+    float thickness = 4.0;
+    float index = 1.2;
+    float base_height = thickness * 8.0;
+    float color_mix = 0.8;
+    float4 color_base = uniforms.tintColor + float4(0.2);
+    
+    // Calculating sharp edge appearance
+    float4 result = glass_border_shade(p, size, radius, thickness, index, base_height, color_base, color_mix, uniforms, texture, textureSampler);
+    
+    float2 center = size * 0.5;
+    float2 rectHalfSize = (size * 0.5) - radius;
+    rectHalfSize = max(rectHalfSize, 0.0);
+    float4 sample = texture.sample(textureSampler, in.texCoord);
+    float sd = sdfRect(center, rectHalfSize, p, radius);
+    
+    float blurFactor = 0.2 + smoothstep(0.0, -155.0, sd) * 0.8;
+    float blurRadius = 4.0 * blurFactor;
+    
+    float mask = smoothstep(0.0, -1.5, sd);
+    
+    if (blurRadius < 1.0) {
+        float3 outColor = sample.rgb * mask;
+        return float4(mix(outColor, result.rgb * 1.2, result.a), mask);
+    }
+    
+    float4 totalColor = float4(0.0);
+    float totalWeight = 0.0;
+    
+    // 7-tap 1D Gaussian (Vertical)
+    for (float i = -3.0; i <= 3.0; i += 1.0) {
+        float offset = i * blurRadius;
+        float weight = exp(-(i*i) / 8.0);
+        
+        float2 uvOffset = float2(0.0, offset / size.y);
+        totalColor += texture.sample(textureSampler, in.texCoord + uvOffset) * weight;
+        totalWeight += weight;
+    }
+    
+    float4 finalColor = totalColor / totalWeight;
+    
+    float3 outColor = finalColor.rgb * mask;
+    return float4(mix(outColor, result.rgb, result.a), mask);
 }

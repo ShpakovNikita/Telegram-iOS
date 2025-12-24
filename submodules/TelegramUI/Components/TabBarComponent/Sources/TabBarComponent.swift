@@ -90,13 +90,17 @@ public final class TabBarComponent: Component {
         
         public override init(frame: CGRect) {
             self.backgroundView = GlassBackgroundView()
+            self.backgroundView.layer.shadowRadius = 32.0
+            self.backgroundView.layer.shadowOpacity = 0.15
+            self.backgroundView.layer.shadowOffset = CGSize()
+            self.backgroundView.layer.shadowColor = UIColor.black.cgColor
+            
             self.selectionView = GlassBackgroundView.ContentImageView()
             
             self.contextGestureContainerView = ContextControllerSourceView()
             self.contextGestureContainerView.isGestureEnabled = true
             
-            if #available(iOS 26.0, *) {
-                /*
+            if #available(iOS 26.0, *), !GlassBackgroundView.useCustomGlassImpl {
                 let nativeTabBar = UITabBar()
                 self.nativeTabBar = nativeTabBar
                 
@@ -128,8 +132,7 @@ public final class TabBarComponent: Component {
                 nativeTabBar.standardAppearance.compactInlineLayoutAppearance.selected.titleTextAttributes = [
                     .foregroundColor: itemColor,
                     .font: itemFont
-                ]*/
-                self.nativeTabBar = nil
+                ]
             } else {
                 self.nativeTabBar = nil
             }

@@ -398,7 +398,10 @@ public class GlassBackgroundView: UIView {
         fatalError("init(coder:) has not been implemented")
     }
     
-    override public func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+    public override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if !self.point(inside: point, with: event) {
+            return nil
+        }
         if let nativeView = self.nativeView {
             if let result = nativeView.hitTest(self.convert(point, to: nativeView), with: event) {
                 return result
@@ -406,6 +409,9 @@ public class GlassBackgroundView: UIView {
         } else {
             if let result = self.contentContainer.hitTest(self.convert(point, to: self.contentContainer), with: event) {
                 return result
+            }
+            if let params = self.params, params.isInteractive {
+                return self
             }
         }
         return nil
@@ -415,6 +421,9 @@ public class GlassBackgroundView: UIView {
         self.update(size: size, shape: .roundedRect(cornerRadius: cornerRadius), isDark: isDark, tintColor: tintColor, isInteractive: isInteractive, transition: transition)
     }
     
+    private var panGesture: UIPanGestureRecognizer?
+    private var pressGesture: UILongPressGestureRecognizer?
+
     public func update(size: CGSize, shape: Shape, isDark: Bool, tintColor: TintColor, isInteractive: Bool = false, transition: ComponentTransition) {
         if let nativeView = self.nativeView, let nativeViewClippingContext = self.nativeViewClippingContext, (nativeView.bounds.size != size || nativeViewClippingContext.shape != shape) {
             
@@ -427,6 +436,33 @@ public class GlassBackgroundView: UIView {
             }
         }
         
+        if isInteractive && self.nativeView == nil {
+             if self.panGesture == nil {
+                 let panGesture = UIPanGestureRecognizer(target: self, action: #selector(self.handlePan(_:)))
+                 panGesture.cancelsTouchesInView = false
+                 panGesture.delegate = self
+                 self.addGestureRecognizer(panGesture)
+                 self.panGesture = panGesture
+             }
+             if self.pressGesture == nil {
+                 let pressGesture = UILongPressGestureRecognizer(target: self, action: #selector(self.handlePress(_:)))
+                 pressGesture.minimumPressDuration = 0.0
+                 pressGesture.cancelsTouchesInView = false
+                 pressGesture.delegate = self
+                 self.addGestureRecognizer(pressGesture)
+                 self.pressGesture = pressGesture
+             }
+        } else {
+             if let panGesture = self.panGesture {
+                 self.removeGestureRecognizer(panGesture)
+                 self.panGesture = nil
+             }
+             if let pressGesture = self.pressGesture {
+                 self.removeGestureRecognizer(pressGesture)
+                 self.pressGesture = nil
+             }
+        }
+        
         if let liquidGlassView = self.liquidGlassView {
             transition.setFrame(view: liquidGlassView, frame: CGRect(origin: CGPoint(), size: size))
             switch shape {
@@ -434,6 +470,7 @@ public class GlassBackgroundView: UIView {
                 liquidGlassView.cornerRadius = cornerRadius
             }
             liquidGlassView.tintColor = tintColor.color
+            liquidGlassView.isInteractive = isInteractive
         }
         
         if let backgroundNode = self.backgroundNode {
@@ -556,7 +593,96 @@ public class GlassBackgroundView: UIView {
         }
         transition.setFrame(view: self.contentContainer, frame: CGRect(origin: CGPoint(), size: size))
     }
+    
+    public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        return true
+    }
+    
+    @objc private func handlePress(_ gesture: UILongPressGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            let scaleBase = (self.bounds.size.width + 14.0) / self.bounds.size.width
+            UIView.animate(withDuration: 0.2, delay: 0.0, options: [.curveEaseOut, .allowUserInteraction], animations: {
+                self.setInteractiveTransform(CGAffineTransform(scaleX: scaleBase, y: scaleBase))
+            }, completion: nil)
+        case .ended, .cancelled:
+            if let panGesture = self.panGesture, panGesture.state == .began || panGesture.state == .changed {
+                // Pan is controlling.
+            } else {
+                UIView.animate(withDuration: 0.4, delay: 0.0, usingSpringWithDamping: 0.5, initialSpringVelocity: 0.0, options: [.allowUserInteraction], animations: {
+                    self.setInteractiveTransform(.identity)
+                }, completion: nil)
+            }
+        default:
+            break
+        }
+    }
+    
+    private func getWeightModifier(maxArea: CGFloat = 6000.0) -> CGFloat {
+        let area = self.bounds.size.width * self.bounds.size.height
+        let normalizedArea = min(area, maxArea) / maxArea
+        // Interpolate from 1.0 (light) to 0.25 (heavy)
+        let weightModifier = 1.0 * (1.0 - normalizedArea) + 0.25 * normalizedArea
+        return weightModifier
+    }
+    
+    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        let screenSize = UIScreen.main.bounds.size
+        let translation = gesture.translation(in: self)
+        
+        switch gesture.state {
+        case .changed:
+            let absX = abs(translation.x)
+            let absY = abs(translation.y)
+            
+            let scaleBase = (self.bounds.size.width + 14.0) / self.bounds.size.width
+            let positionWeightModifier = getWeightModifier(maxArea: 6000)
+            let scaleWeightModifier = getWeightModifier(maxArea: 12000)
+            
+            var scaleX: CGFloat = scaleBase
+            var scaleY: CGFloat = scaleBase
+            
+            let scaleBaseModifier: CGFloat = 0.4
+            
+            var progress = min(absX / screenSize.height, 1.0)
+            scaleX += scaleBaseModifier * progress * scaleWeightModifier
+            scaleY -= scaleBaseModifier * progress * scaleWeightModifier
+            
+            progress = min(absY / screenSize.height, 1.0)
+            scaleY += scaleBaseModifier * progress * scaleWeightModifier
+            scaleX -= scaleBaseModifier * progress * scaleWeightModifier
+            
+            let maxTranslation = screenSize.height * 0.05 * positionWeightModifier
+            let translationX = (translation.x / screenSize.width) * maxTranslation
+            let translationY = (translation.y / screenSize.height) * maxTranslation
+            
+            let transform = CGAffineTransform(scaleX: scaleX, y: scaleY).concatenating(CGAffineTransform(translationX: translationX, y: translationY))
+            
+            UIView.animate(withDuration: 0.1, delay: 0.0, options: [.curveLinear, .allowUserInteraction], animations: {
+                self.setInteractiveTransform(transform)
+            }, completion: nil)
+            
+        case .ended, .cancelled:
+            UIView.animate(withDuration: 0.4, delay: 0.0, usingSpringWithDamping: 0.5, initialSpringVelocity: 0.0, options: [.allowUserInteraction], animations: {
+                self.setInteractiveTransform(.identity)
+            }, completion: nil)
+        default:
+            break
+        }
+    }
+    
+    private func setInteractiveTransform(_ transform: CGAffineTransform) {
+        self.liquidGlassView?.transform = transform
+        self.backgroundNode?.view.transform = transform
+        self.contentContainer.transform = transform
+        self.nativeView?.transform = transform
+        self.shadowView?.transform = transform
+        self.foregroundView?.transform = transform
+        self.nativeParamsView?.transform = transform
+    }
 }
+
+extension GlassBackgroundView: UIGestureRecognizerDelegate {}
 
 public final class GlassBackgroundContainerView: UIView {
     private final class ContentView: UIView {

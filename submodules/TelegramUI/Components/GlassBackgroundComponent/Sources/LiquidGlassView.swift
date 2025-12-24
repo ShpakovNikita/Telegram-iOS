@@ -32,12 +32,8 @@ public final class LiquidGlassView: MTKView {
         }
     }
     
-    public override var tintColor: UIColor? {
-        didSet {
-            self.setNeedsDisplay()
-        }
-    }
-    
+    public var isInteractive: Bool = false
+ 
     public init() {
         let device = MTLCreateSystemDefaultDevice()
         super.init(frame: .zero, device: device)
@@ -63,7 +59,7 @@ public final class LiquidGlassView: MTKView {
             LiquidGlassGlobalContext.shared.remove(self)
         }
     }
-    
+
     private func setupMetal() {
         guard let device = self.device else { return }
         
@@ -133,7 +129,7 @@ public final class LiquidGlassView: MTKView {
         }
         super.draw(layer, in: ctx)
     }
-
+ 
     override public func draw(_ rect: CGRect) {
         guard let drawable = self.currentDrawable,
               let finalRenderPassDescriptor = self.currentRenderPassDescriptor,

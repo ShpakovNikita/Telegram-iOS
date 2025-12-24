@@ -17,6 +17,9 @@ struct Uniforms {
     float cornerRadius;
     float padding;
     float4 screenRect;
+    float2 touchPos;
+    float highlight;
+    float padding2;
 };
 
 vertex VertexOut liquid_glass_vertex(uint vertexID [[vertex_id]],
@@ -229,26 +232,39 @@ fragment float4 liquid_glass_blur_vertical(VertexOut in [[stage_in]],
     
     float mask = smoothstep(0.0, -1.5, sd);
     
+    float4 finalColor;
+    
     if (blurRadius < 1.0) {
         float3 outColor = sample.rgb * mask;
-        return float4(mix(outColor, result.rgb * 1.2, result.a), mask);
-    }
-    
-    float4 totalColor = float4(0.0);
-    float totalWeight = 0.0;
-    
-    // 7-tap 1D Gaussian (Vertical)
-    for (float i = -3.0; i <= 3.0; i += 1.0) {
-        float offset = i * blurRadius;
-        float weight = exp(-(i*i) / 8.0);
+        finalColor = float4(mix(outColor, result.rgb * 1.2, result.a), mask);
+    } else {
+        float4 totalColor = float4(0.0);
+        float totalWeight = 0.0;
         
-        float2 uvOffset = float2(0.0, offset / size.y);
-        totalColor += texture.sample(textureSampler, in.texCoord + uvOffset) * weight;
-        totalWeight += weight;
+        // 7-tap 1D Gaussian (Vertical)
+        for (float i = -3.0; i <= 3.0; i += 1.0) {
+            float offset = i * blurRadius;
+            float weight = exp(-(i*i) / 8.0);
+            
+            float2 uvOffset = float2(0.0, offset / size.y);
+            totalColor += texture.sample(textureSampler, in.texCoord + uvOffset) * weight;
+            totalWeight += weight;
+        }
+        
+        float4 blurredColor = totalColor / totalWeight;
+        float3 outColor = blurredColor.rgb * mask;
+        finalColor = float4(mix(outColor, result.rgb, result.a), mask);
     }
     
-    float4 finalColor = totalColor / totalWeight;
+    // Highlight
+    if (uniforms.highlight > 0.0) {
+        float globalBoost = 1.0 + 0.2 * uniforms.highlight;
+        
+        float d = abs(p.x - uniforms.touchPos.x);
+        float radialBoost = smoothstep(300.0, 0.0, d) * 0.3 * uniforms.highlight;
+        
+        finalColor.rgb *= (globalBoost + radialBoost);
+    }
     
-    float3 outColor = finalColor.rgb * mask;
-    return float4(mix(outColor, result.rgb, result.a), mask);
+    return finalColor;
 }

@@ -599,12 +599,17 @@ public class GlassBackgroundView: UIView {
     }
     
     @objc private func handlePress(_ gesture: UILongPressGestureRecognizer) {
+        let location = gesture.location(in: self.liquidGlassView)
+
         switch gesture.state {
         case .began:
             let scaleBase = (self.bounds.size.width + 14.0) / self.bounds.size.width
             UIView.animate(withDuration: 0.2, delay: 0.0, options: [.curveEaseOut, .allowUserInteraction], animations: {
                 self.setInteractiveTransform(CGAffineTransform(scaleX: scaleBase, y: scaleBase))
             }, completion: nil)
+            
+            self.liquidGlassView?.updateHighlight(active: true, position: location)
+            
         case .ended, .cancelled:
             if let panGesture = self.panGesture, panGesture.state == .began || panGesture.state == .changed {
                 // Pan is controlling.
@@ -612,6 +617,8 @@ public class GlassBackgroundView: UIView {
                 UIView.animate(withDuration: 0.4, delay: 0.0, usingSpringWithDamping: 0.5, initialSpringVelocity: 0.0, options: [.allowUserInteraction], animations: {
                     self.setInteractiveTransform(.identity)
                 }, completion: nil)
+                
+                self.liquidGlassView?.updateHighlight(active: false, position: .zero)
             }
         default:
             break
@@ -629,6 +636,7 @@ public class GlassBackgroundView: UIView {
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         let screenSize = UIScreen.main.bounds.size
         let translation = gesture.translation(in: self)
+        let location = gesture.location(in: self.liquidGlassView)
         
         switch gesture.state {
         case .changed:
@@ -662,10 +670,15 @@ public class GlassBackgroundView: UIView {
                 self.setInteractiveTransform(transform)
             }, completion: nil)
             
+            self.liquidGlassView?.updateHighlight(active: true, position: location)
+            
         case .ended, .cancelled:
             UIView.animate(withDuration: 0.4, delay: 0.0, usingSpringWithDamping: 0.5, initialSpringVelocity: 0.0, options: [.allowUserInteraction], animations: {
                 self.setInteractiveTransform(.identity)
             }, completion: nil)
+            
+            self.liquidGlassView?.updateHighlight(active: false, position: .zero)
+            
         default:
             break
         }

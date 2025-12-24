@@ -11,6 +11,9 @@ private struct LiquidGlassUniforms {
     var cornerRadius: Float
     var padding: Float
     var screenRect: simd_float4
+    var touchPos: simd_float2
+    var highlight: Float
+    var padding2: Float
 }
 
 private struct LiquidGlassVertex {
@@ -23,6 +26,7 @@ public final class LiquidGlassView: MTKView {
     private var composePipelineState: MTLRenderPipelineState?
     private var blurHPipelineState: MTLRenderPipelineState?
     private var blurVPipelineState: MTLRenderPipelineState?
+    private var blurVPipelineStateHDR: MTLRenderPipelineState?
     private var intermediateTexturePass1: MTLTexture?
     private var intermediateTexturePass2: MTLTexture?
     
@@ -33,6 +37,28 @@ public final class LiquidGlassView: MTKView {
     }
     
     public var isInteractive: Bool = false
+    
+    private var highlightActive: Bool = false
+    private var highlightPosition: CGPoint = .zero
+    private var highlightIntensity: CGFloat = 0.0
+    
+    public func updateHighlight(active: Bool, position: CGPoint) {
+        let wasActive = self.highlightActive
+        self.highlightActive = active
+        self.highlightPosition = position
+        
+        if active {
+             self.highlightIntensity = 1.0 // Animate or set to 1.0 immediately? User says "events" so maybe constant during drag.
+        } else {
+             self.highlightIntensity = 0.0
+        }
+        
+        if wasActive != active {
+            self.colorPixelFormat = active ? .rgba16Float : .bgra8Unorm
+            // When switching to HDR, we might need to recreate drawable or it happens automatically on next draw.
+        }
+        self.setNeedsDisplay()
+    }
  
     public init() {
         let device = MTLCreateSystemDefaultDevice()
@@ -98,13 +124,12 @@ public final class LiquidGlassView: MTKView {
         blurHDescriptor.fragmentFunction = blurHFunction
         blurHDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
         
-        // Pass 3: Vertical blur pipeline, draws to screen
+        // Pass 3: Vertical blur pipeline (SDR, used to switch from HDR when user is not interacting for better performance bandwidth)
         let blurVDescriptor = MTLRenderPipelineDescriptor()
         blurVDescriptor.vertexFunction = vertexFunction
         blurVDescriptor.fragmentFunction = blurVFunction
-        blurVDescriptor.colorAttachments[0].pixelFormat = self.colorPixelFormat
+        blurVDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
         
-        // Enable blending for final pass
         blurVDescriptor.colorAttachments[0].isBlendingEnabled = true
         blurVDescriptor.colorAttachments[0].rgbBlendOperation = .add
         blurVDescriptor.colorAttachments[0].alphaBlendOperation = .add
@@ -113,10 +138,25 @@ public final class LiquidGlassView: MTKView {
         blurVDescriptor.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
         blurVDescriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         
+        // Pass 3: Vertical blur pipeline (HDR)
+        let blurVDescriptorHDR = MTLRenderPipelineDescriptor()
+        blurVDescriptorHDR.vertexFunction = vertexFunction
+        blurVDescriptorHDR.fragmentFunction = blurVFunction
+        blurVDescriptorHDR.colorAttachments[0].pixelFormat = .rgba16Float
+        
+        blurVDescriptorHDR.colorAttachments[0].isBlendingEnabled = true
+        blurVDescriptorHDR.colorAttachments[0].rgbBlendOperation = .add
+        blurVDescriptorHDR.colorAttachments[0].alphaBlendOperation = .add
+        blurVDescriptorHDR.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        blurVDescriptorHDR.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        blurVDescriptorHDR.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+        blurVDescriptorHDR.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        
         do {
             self.composePipelineState = try device.makeRenderPipelineState(descriptor: composeDescriptor)
             self.blurHPipelineState = try device.makeRenderPipelineState(descriptor: blurHDescriptor)
             self.blurVPipelineState = try device.makeRenderPipelineState(descriptor: blurVDescriptor)
+            self.blurVPipelineStateHDR = try device.makeRenderPipelineState(descriptor: blurVDescriptorHDR)
         } catch {
             print("Failed to create pipeline states: \(error)")
         }
@@ -135,11 +175,15 @@ public final class LiquidGlassView: MTKView {
               let finalRenderPassDescriptor = self.currentRenderPassDescriptor,
               let composePipelineState = self.composePipelineState,
               let blurHPipelineState = self.blurHPipelineState,
-              let blurVPipelineState = self.blurVPipelineState,
+              let blurVPipelineStateSDR = self.blurVPipelineState,
+              let blurVPipelineStateHDR = self.blurVPipelineStateHDR,
               let commandQueue = self.commandQueue,
               let commandBuffer = commandQueue.makeCommandBuffer() else {
             return
         }
+        
+        // Select pipeline based on current pixel format
+        let blurVPipelineState = (self.colorPixelFormat == .rgba16Float) ? blurVPipelineStateHDR : blurVPipelineStateSDR
         
         let width = Int(self.bounds.width * self.contentScaleFactor)
         let height = Int(self.bounds.height * self.contentScaleFactor)
@@ -178,12 +222,20 @@ public final class LiquidGlassView: MTKView {
                 Float(boundsInWindow.size.height / globalFrame.height)
             )
         }
+        
+        // Convert highlight position to pixels (from view coordinates)
+        let touchPosPixels = simd_float2(Float(self.highlightPosition.x * self.contentScaleFactor),
+                                         Float(self.highlightPosition.y * self.contentScaleFactor))
+        
         var uniforms = LiquidGlassUniforms(
             size: simd_float2(Float(width), Float(height)),
             tintColor: simd_float4(Float(r), Float(g), Float(b), Float(a)),
             cornerRadius: Float(self.cornerRadius * self.contentScaleFactor),
             padding: 0,
-            screenRect: screenRectIdx
+            screenRect: screenRectIdx,
+            touchPos: touchPosPixels,
+            highlight: Float(self.highlightIntensity),
+            padding2: 0
         )
         
         // Helper to encode a pass

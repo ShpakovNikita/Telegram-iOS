@@ -41,23 +41,51 @@ public final class LiquidGlassView: MTKView {
     private var highlightActive: Bool = false
     private var highlightPosition: CGPoint = .zero
     private var highlightIntensity: CGFloat = 0.0
+    private var targetHighlightIntensity: CGFloat = 0.0
+    
+    private var displayLink: CADisplayLink?
     
     public func updateHighlight(active: Bool, position: CGPoint) {
-        let wasActive = self.highlightActive
         self.highlightActive = active
-        self.highlightPosition = position
-        
         if active {
-             self.highlightIntensity = 1.0 // Animate or set to 1.0 immediately? User says "events" so maybe constant during drag.
-        } else {
-             self.highlightIntensity = 0.0
+            self.highlightPosition = position
         }
         
-        if wasActive != active {
-            self.colorPixelFormat = active ? .rgba16Float : .bgra8Unorm
-            // When switching to HDR, we might need to recreate drawable or it happens automatically on next draw.
+        self.targetHighlightIntensity = active ? 1.0 : 0.0
+        
+        if self.displayLink == nil {
+            let displayLink = CADisplayLink(target: self, selector: #selector(self.displayLinkUpdate))
+             displayLink.add(to: .main, forMode: .common)
+            self.displayLink = displayLink
         }
-        self.setNeedsDisplay()
+    }
+    
+    @objc private func displayLinkUpdate() {
+        guard let displayLink = self.displayLink else {
+            return
+        }
+        
+        let target = self.targetHighlightIntensity
+        var current = self.highlightIntensity
+        
+        let dt = displayLink.targetTimestamp - displayLink.timestamp
+        // Frame-rate independent exponential decay
+        let k: Double = 5.0
+        let factor = 1.0 - exp(-k * dt)
+        
+        if abs(current - target) > 0.001 {
+            current = current + (target - current) * factor
+            self.highlightIntensity = current
+            self.setNeedsDisplay()
+        } else {
+            current = target
+            self.highlightIntensity = current
+            self.setNeedsDisplay() // Ensure final frame is drawn
+            
+            // Stop loop if settled
+            self.displayLink?.invalidate()
+            self.displayLink = nil
+        }
     }
  
     public init() {
@@ -69,6 +97,10 @@ public final class LiquidGlassView: MTKView {
         self.clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0)
         self.colorPixelFormat = .bgra8Unorm
         self.framebufferOnly = true
+        
+        // Optimize: Only draw when explicitly requested
+        self.isPaused = true
+        self.enableSetNeedsDisplay = true
         
         self.setupMetal()
     }
@@ -171,6 +203,13 @@ public final class LiquidGlassView: MTKView {
     }
  
     override public func draw(_ rect: CGRect) {
+        let requiredFormat: MTLPixelFormat = (self.highlightIntensity > 0.001 || self.targetHighlightIntensity > 0.001) ? .rgba16Float : .bgra8Unorm
+        if self.colorPixelFormat != requiredFormat {
+            self.colorPixelFormat = requiredFormat
+            // Changing pixel format invalidates current drawable. Return and wait for next draw call.
+            return
+        }
+        
         guard let drawable = self.currentDrawable,
               let finalRenderPassDescriptor = self.currentRenderPassDescriptor,
               let composePipelineState = self.composePipelineState,

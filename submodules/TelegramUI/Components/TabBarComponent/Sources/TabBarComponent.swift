@@ -166,6 +166,11 @@ public final class TabBarComponent: Component {
                 let panGesture = UIPanGestureRecognizer(target: self, action: #selector(self.onPanGesture(_:)))
                 panGesture.delegate = self
                 self.addGestureRecognizer(panGesture)
+                
+                let glassView = MagnifyingGlassView()
+                self.magnifyingGlassView = glassView
+                self.addSubview(glassView)
+                glassView.alpha = 0.0
             }
             
             self.contextGestureContainerView.shouldBegin = { [weak self] point in
@@ -301,37 +306,56 @@ public final class TabBarComponent: Component {
         private func updateMagnifyingGlass(location: CGPoint, isActive: Bool) {
             guard let component = self.component else { return }
             
-            if isActive {
-                let glassView: MagnifyingGlassView
-                if let current = self.magnifyingGlassView {
-                    glassView = current
-                } else {
-                    glassView = MagnifyingGlassView()
-                    self.magnifyingGlassView = glassView
-                    self.addSubview(glassView)
-                    glassView.alpha = 0.0
+            if isActive, let glassView = self.magnifyingGlassView {
+                // Ensure it's on top of background
+                self.bringSubviewToFront(glassView)
+                
+                var itemSize = CGSize(width: 60.0, height: 60.0)
+                if let firstId = component.items.first?.id, let view = self.itemViews[firstId]?.view {
+                    itemSize = view.bounds.size
                 }
+
+                let finalSize = CGSize(width: itemSize.width + 16.0, height: itemSize.height + 16.0)
                 
-                let itemSize = CGSize(width: 60.0, height: 60.0)
-                let finalSize = CGSize(width: itemSize.width * 1.5, height: itemSize.height * 1.5)
+                // Track backend content view
+                glassView.trackedView = self.backgroundView.contentView
+
+                // Vertical constraint: Center vertically in content view
+                let centerY = self.backgroundView.contentView.bounds.height * 0.5
                 
-                // Vertical constraint: Center vertically
-                let centerY = self.bounds.height * 0.5
+                // Clamp horizontal position
+                // We use contentView.bounds because we want to clamp to the visible glass area
+                let contentBounds = self.backgroundView.contentView.bounds
+                let minX = contentBounds.minX + finalSize.width * 0.5
+                let maxX = contentBounds.maxX - finalSize.width * 0.5
+                
+                // Convert screen/self location to backgroundView.contentView coordinate space
+                // This allows us to find the "logical" clamp position inside the glass
+                let localLocation = self.convert(location, to: self.backgroundView.contentView)
                 
                 // CRITICAL: Round origin to avoid subpixel rendering
-                let originX = floor(location.x - finalSize.width * 0.5)
+                let originX = floor(localLocation.x - finalSize.width * 0.5)
                 // Center is sufficient for positioning with transform
-                let centerX = originX + finalSize.width * 0.5
+                var centerX = originX + finalSize.width * 0.5
                 
-                // Use center and bounds to avoid conflict with transform
+                centerX = max(minX, min(maxX, centerX))
+                
+                // Pass the LOCAL center to the glass view. The glass view will track this point 
+                // relative to the trackedView (contentView) and project it to self.
+                glassView.trackedLocation = CGPoint(x: centerX, y: centerY)
+                
+                // Update bounds size just in case
                 glassView.bounds = CGRect(origin: .zero, size: finalSize)
-                glassView.center = CGPoint(x: centerX, y: centerY)
+                // note: glassView.center is not set here, it is controlled by physics loop
+                
+                // Ensure physics loop is running to update position
+                glassView.update(panVelocity: .zero)
                 
                 // Only trigger metal redraw if necessary (size change or first show)
                 // Since size is constant here, we can likely skip updates after first frame
                 // But to be safe lets check if we just created it or if we want to ensure it's drawn
                 if glassView.alpha == 0.0 {
-                    glassView.update(size: finalSize, cornerRadius: finalSize.height * 0.45)
+                    glassView.update(size: finalSize, cornerRadius: finalSize.height * 0.5)
                 }
                 
                 if glassView.alpha < 1.0 {
@@ -396,32 +420,14 @@ public final class TabBarComponent: Component {
         
         private func applySquashAndStretch(velocity: CGPoint) {
             guard let glassView = self.magnifyingGlassView else { return }
-            
-            let sensitivity: CGFloat = 0.0005
-            let maxStretch: CGFloat = 0.2
-            
-            var scaleX: CGFloat = 1.0
-            var scaleY: CGFloat = 1.0
-            
-            if abs(velocity.x) > abs(velocity.y) {
-                let factor = min(abs(velocity.x) * sensitivity, maxStretch)
-                scaleX = 1.0 + factor
-                scaleY = 1.0 - factor * 0.5
-            } else {
-                let factor = min(abs(velocity.y) * sensitivity, maxStretch)
-                scaleY = 1.0 + factor
-                scaleX = 1.0 - factor * 0.5
-            }
-            
-            // Direct transform update for performance during fast gestures
-            glassView.transform = CGAffineTransform(scaleX: scaleX, y: scaleY)
+            // Pass velocity to the view's internal physics engine
+            glassView.update(panVelocity: velocity)
         }
         
         private func resetSquashAndStretch() {
              guard let glassView = self.magnifyingGlassView else { return }
-             UIView.animate(withDuration: 0.4, delay: 0, usingSpringWithDamping: 0.5, initialSpringVelocity: 0.0, options: [.allowUserInteraction]) {
-                 glassView.transform = .identity
-             }
+             // Signal physics engine to spring back to identity
+             glassView.resetPhysics()
         }
         
         @objc private func onLongPressGesture(_ recognizer: UILongPressGestureRecognizer) {

@@ -464,7 +464,16 @@ public class GlassBackgroundView: UIView {
         }
         
         if let liquidGlassView = self.liquidGlassView {
-            transition.setFrame(view: liquidGlassView, frame: CGRect(origin: CGPoint(), size: size))
+            let frame = CGRect(origin: CGPoint(), size: size)
+            if transition.animation.isImmediate {
+                liquidGlassView.bounds = CGRect(origin: .zero, size: frame.size)
+                liquidGlassView.center = CGPoint(x: frame.midX, y: frame.midY)
+            } else {
+                UIView.animate(withDuration: 0.2, animations: {
+                    liquidGlassView.bounds = CGRect(origin: .zero, size: frame.size)
+                    liquidGlassView.center = CGPoint(x: frame.midX, y: frame.midY)
+                })
+            }
             switch shape {
             case let .roundedRect(cornerRadius):
                 liquidGlassView.cornerRadius = cornerRadius
@@ -480,7 +489,16 @@ public class GlassBackgroundView: UIView {
             case let .roundedRect(cornerRadius):
                 backgroundNode.update(size: size, cornerRadius: cornerRadius, transition: transition.containedViewLayoutTransition)
             }
-            transition.setFrame(view: backgroundNode.view, frame: CGRect(origin: CGPoint(), size: size))
+            let frame = CGRect(origin: CGPoint(), size: size)
+            if transition.animation.isImmediate {
+                backgroundNode.view.bounds = CGRect(origin: .zero, size: frame.size)
+                backgroundNode.view.center = CGPoint(x: frame.midX, y: frame.midY)
+            } else {
+                UIView.animate(withDuration: 0.2, animations: {
+                    backgroundNode.view.bounds = CGRect(origin: .zero, size: frame.size)
+                    backgroundNode.view.center = CGPoint(x: frame.midX, y: frame.midY)
+                })
+            }
         }
         
         let shadowInset: CGFloat = 32.0
@@ -586,12 +604,39 @@ public class GlassBackgroundView: UIView {
         transition.setFrame(view: self.maskContainerView, frame: CGRect(origin: CGPoint(), size: CGSize(width: size.width + shadowInset * 2.0, height: size.height + shadowInset * 2.0)))
         transition.setFrame(view: self.maskContentView, frame: CGRect(origin: CGPoint(x: shadowInset, y: shadowInset), size: size))
         if let foregroundView = self.foregroundView {
-            transition.setFrame(view: foregroundView, frame: CGRect(origin: CGPoint(), size: size).insetBy(dx: -shadowInset, dy: -shadowInset))
+            let frame = CGRect(origin: CGPoint(), size: size).insetBy(dx: -shadowInset, dy: -shadowInset)
+            if transition.animation.isImmediate {
+                foregroundView.bounds = CGRect(origin: .zero, size: frame.size)
+                foregroundView.center = CGPoint(x: frame.midX, y: frame.midY)
+            } else {
+                UIView.animate(withDuration: 0.2, animations: {
+                    foregroundView.bounds = CGRect(origin: .zero, size: frame.size)
+                    foregroundView.center = CGPoint(x: frame.midX, y: frame.midY)
+                })
+            }
         }
         if let shadowView = self.shadowView {
-            transition.setFrame(view: shadowView, frame: CGRect(origin: CGPoint(), size: size).insetBy(dx: -shadowInset, dy: -shadowInset))
+            let frame = CGRect(origin: CGPoint(), size: size).insetBy(dx: -shadowInset, dy: -shadowInset)
+            if transition.animation.isImmediate {
+                shadowView.bounds = CGRect(origin: .zero, size: frame.size)
+                shadowView.center = CGPoint(x: frame.midX, y: frame.midY)
+            } else {
+                UIView.animate(withDuration: 0.2, animations: {
+                    shadowView.bounds = CGRect(origin: .zero, size: frame.size)
+                    shadowView.center = CGPoint(x: frame.midX, y: frame.midY)
+                })
+            }
         }
-        transition.setFrame(view: self.contentContainer, frame: CGRect(origin: CGPoint(), size: size))
+        let contentFrame = CGRect(origin: CGPoint(), size: size)
+        if transition.animation.isImmediate {
+            self.contentContainer.bounds = CGRect(origin: .zero, size: contentFrame.size)
+            self.contentContainer.center = CGPoint(x: contentFrame.midX, y: contentFrame.midY)
+        } else {
+             UIView.animate(withDuration: 0.2, animations: {
+                 self.contentContainer.bounds = CGRect(origin: .zero, size: contentFrame.size)
+                 self.contentContainer.center = CGPoint(x: contentFrame.midX, y: contentFrame.midY)
+             })
+        }
     }
     
     public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -625,11 +670,11 @@ public class GlassBackgroundView: UIView {
         }
     }
     
-    private func getWeightModifier(maxArea: CGFloat = 6000.0) -> CGFloat {
+    private func getWeightModifier(maxArea: CGFloat = 6000.0, minModifier: CGFloat = 0.25) -> CGFloat {
         let area = self.bounds.size.width * self.bounds.size.height
         let normalizedArea = min(area, maxArea) / maxArea
         // Interpolate from 1.0 (light) to 0.25 (heavy)
-        let weightModifier = 1.0 * (1.0 - normalizedArea) + 0.25 * normalizedArea
+        let weightModifier = 1.0 * (1.0 - normalizedArea) + minModifier * normalizedArea
         return weightModifier
     }
     
@@ -644,8 +689,8 @@ public class GlassBackgroundView: UIView {
             let absY = abs(translation.y)
             
             let scaleBase = (self.bounds.size.width + 14.0) / self.bounds.size.width
-            let positionWeightModifier = getWeightModifier(maxArea: 6000)
-            let scaleWeightModifier = getWeightModifier(maxArea: 12000)
+            let positionWeightModifier = getWeightModifier(maxArea: 12000, minModifier: 0.125)
+            let scaleWeightModifier = getWeightModifier(maxArea: 12000, minModifier: 0.25)
             
             var scaleX: CGFloat = scaleBase
             var scaleY: CGFloat = scaleBase

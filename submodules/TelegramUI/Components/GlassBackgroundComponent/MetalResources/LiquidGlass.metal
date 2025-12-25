@@ -257,11 +257,11 @@ fragment float4 liquid_glass_blur_vertical(VertexOut in [[stage_in]],
     }
     
     // Highlight
-    if (uniforms.highlight > 0.0) {
-        float globalBoost = 1.0 + 0.2 * uniforms.highlight;
+    if (uniforms.highlight > 0.01) {
+        float globalBoost = 1.0 + 0.15 * uniforms.highlight;
         
         float d = abs(p.x - uniforms.touchPos.x);
-        float radialBoost = smoothstep(300.0, 0.0, d) * 0.3 * uniforms.highlight;
+        float radialBoost = smoothstep(400.0, 0.0, d) * 0.2 * uniforms.highlight;
         
         finalColor.rgb *= (globalBoost + radialBoost);
     }

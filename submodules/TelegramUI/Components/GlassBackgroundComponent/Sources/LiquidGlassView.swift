@@ -263,7 +263,8 @@ public final class LiquidGlassView: MTKView {
         }
         
         // Convert highlight position to pixels (from view coordinates)
-        let touchPosPixels = simd_float2(Float(self.highlightPosition.x * self.contentScaleFactor),
+        let xPos = min(self.frame.size.width, max(self.highlightPosition.x, 0))
+        let touchPosPixels = simd_float2(Float(xPos * self.contentScaleFactor),
                                          Float(self.highlightPosition.y * self.contentScaleFactor))
         
         var uniforms = LiquidGlassUniforms(

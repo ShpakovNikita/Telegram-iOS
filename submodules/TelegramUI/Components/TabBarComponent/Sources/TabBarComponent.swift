@@ -80,6 +80,8 @@ public final class TabBarComponent: Component {
         private let contextGestureContainerView: ContextControllerSourceView
         private let nativeTabBar: UITabBar?
         
+        private var magnifyingGlassView: MagnifyingGlassView?
+        
         private var itemViews: [AnyHashable: ComponentView<Empty>] = [:]
         private var selectedItemViews: [AnyHashable: ComponentView<Empty>] = [:]
         
@@ -155,6 +157,15 @@ public final class TabBarComponent: Component {
             } else {
                 self.contextGestureContainerView.addSubview(self.backgroundView)
                 self.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.onTapGesture(_:))))
+                
+                let longPressGesture = UILongPressGestureRecognizer(target: self, action: #selector(self.onLongPressGesture(_:)))
+                longPressGesture.minimumPressDuration = 0.2
+                longPressGesture.delegate = self
+                self.addGestureRecognizer(longPressGesture)
+                
+                let panGesture = UIPanGestureRecognizer(target: self, action: #selector(self.onPanGesture(_:)))
+                panGesture.delegate = self
+                self.addGestureRecognizer(panGesture)
             }
             
             self.contextGestureContainerView.shouldBegin = { [weak self] point in
@@ -195,7 +206,7 @@ public final class TabBarComponent: Component {
                 let _ = self
                 return
                 /*guard let self, let itemWithActiveContextGesture = self.itemWithActiveContextGesture else {
-                    return
+                return
                 }
                 guard let itemView = self.itemViews[itemWithActiveContextGesture]?.view else {
                     return
@@ -284,22 +295,147 @@ public final class TabBarComponent: Component {
             return true
         }
         
-        @objc private func onLongPressGesture(_ recognizer: UILongPressGestureRecognizer) {
-            if case .began = recognizer.state {
-                if let nativeTabBar = self.nativeTabBar {
-                    func cancelGestures(view: UIView) {
-                        for recognizer in view.gestureRecognizers ?? [] {
-                            if NSStringFromClass(type(of: recognizer)).contains("sSelectionGestureRecognizer") {
-                                recognizer.state = .cancelled
-                            }
-                        }
-                        for subview in view.subviews {
-                            cancelGestures(view: subview)
-                        }
-                    }
-                    
-                    cancelGestures(view: nativeTabBar)
+        private var initialPanPosition: CGPoint?
+        private var isMagnifying = false
+        
+        private func updateMagnifyingGlass(location: CGPoint, isActive: Bool) {
+            guard let component = self.component else { return }
+            
+            if isActive {
+                let glassView: MagnifyingGlassView
+                if let current = self.magnifyingGlassView {
+                    glassView = current
+                } else {
+                    glassView = MagnifyingGlassView()
+                    self.magnifyingGlassView = glassView
+                    self.addSubview(glassView)
+                    glassView.alpha = 0.0
                 }
+                
+                let itemSize = CGSize(width: 60.0, height: 60.0)
+                let finalSize = CGSize(width: itemSize.width * 1.5, height: itemSize.height * 1.5)
+                
+                // Vertical constraint: Center vertically
+                let centerY = self.bounds.height * 0.5
+                
+                // CRITICAL: Round origin to avoid subpixel rendering
+                let originX = floor(location.x - finalSize.width * 0.5)
+                // Center is sufficient for positioning with transform
+                let centerX = originX + finalSize.width * 0.5
+                
+                // Use center and bounds to avoid conflict with transform
+                glassView.bounds = CGRect(origin: .zero, size: finalSize)
+                glassView.center = CGPoint(x: centerX, y: centerY)
+                
+                // Only trigger metal redraw if necessary (size change or first show)
+                // Since size is constant here, we can likely skip updates after first frame
+                // But to be safe lets check if we just created it or if we want to ensure it's drawn
+                if glassView.alpha == 0.0 {
+                    glassView.update(size: finalSize, cornerRadius: finalSize.height * 0.45)
+                }
+                
+                if glassView.alpha < 1.0 {
+                    UIView.animate(withDuration: 0.2) {
+                        glassView.alpha = 1.0
+                    }
+                    self.isMagnifying = true
+                }
+            } else {
+                guard let glassView = self.magnifyingGlassView else { return }
+                
+                // Find closest item logic (omitted for brevity in description, but retained in replacement if matching)
+                var closestItem: (AnyHashable, CGFloat)?
+                for (id, itemView) in self.itemViews {
+                    guard let itemView = itemView.view else { continue }
+                    let distance = abs(location.x - itemView.center.x)
+                    if let current = closestItem {
+                        if distance < current.1 {
+                            closestItem = (id, distance)
+                        }
+                    } else {
+                        closestItem = (id, distance)
+                    }
+                }
+                
+                if let (id, _) = closestItem {
+                    if let item = component.items.first(where: { $0.id == id }) {
+                        item.action(false)
+                    }
+                }
+                
+                UIView.animate(withDuration: 0.2, animations: {
+                    glassView.alpha = 0.0
+                }, completion: { [weak self] _ in
+                    if self?.magnifyingGlassView === glassView {
+                       // Keep view for reuse
+                    }
+                })
+                self.isMagnifying = false
+            }
+        }
+        
+        @objc private func onPanGesture(_ recognizer: UIPanGestureRecognizer) {
+            let location = recognizer.location(in: self)
+            let velocity = recognizer.velocity(in: self)
+            
+            switch recognizer.state {
+            case .began:
+                self.initialPanPosition = location
+                self.updateMagnifyingGlass(location: location, isActive: true)
+                self.applySquashAndStretch(velocity: velocity)
+            case .changed:
+                self.updateMagnifyingGlass(location: location, isActive: true)
+                self.applySquashAndStretch(velocity: velocity)
+            case .ended, .cancelled:
+                self.updateMagnifyingGlass(location: location, isActive: false)
+                self.resetSquashAndStretch()
+            default:
+                break
+            }
+        }
+        
+        private func applySquashAndStretch(velocity: CGPoint) {
+            guard let glassView = self.magnifyingGlassView else { return }
+            
+            let sensitivity: CGFloat = 0.0005
+            let maxStretch: CGFloat = 0.2
+            
+            var scaleX: CGFloat = 1.0
+            var scaleY: CGFloat = 1.0
+            
+            if abs(velocity.x) > abs(velocity.y) {
+                let factor = min(abs(velocity.x) * sensitivity, maxStretch)
+                scaleX = 1.0 + factor
+                scaleY = 1.0 - factor * 0.5
+            } else {
+                let factor = min(abs(velocity.y) * sensitivity, maxStretch)
+                scaleY = 1.0 + factor
+                scaleX = 1.0 - factor * 0.5
+            }
+            
+            // Direct transform update for performance during fast gestures
+            glassView.transform = CGAffineTransform(scaleX: scaleX, y: scaleY)
+        }
+        
+        private func resetSquashAndStretch() {
+             guard let glassView = self.magnifyingGlassView else { return }
+             UIView.animate(withDuration: 0.4, delay: 0, usingSpringWithDamping: 0.5, initialSpringVelocity: 0.0, options: [.allowUserInteraction]) {
+                 glassView.transform = .identity
+             }
+        }
+        
+        @objc private func onLongPressGesture(_ recognizer: UILongPressGestureRecognizer) {
+            let location = recognizer.location(in: self)
+            switch recognizer.state {
+            case .began:
+                 self.updateMagnifyingGlass(location: location, isActive: true)
+            case .changed:
+                 self.updateMagnifyingGlass(location: location, isActive: true)
+            case .ended, .cancelled:
+                 self.updateMagnifyingGlass(location: location, isActive: false)
+                 self.resetSquashAndStretch()
+            default:
+                break
             }
         }
         
@@ -548,7 +684,8 @@ public final class TabBarComponent: Component {
             let size = CGSize(width: min(availableSize.width, contentWidth), height: contentHeight)
             
             transition.setFrame(view: self.backgroundView, frame: CGRect(origin: CGPoint(), size: size))
-            self.backgroundView.update(size: size, cornerRadius: size.height * 0.5, isDark: component.theme.overallDarkAppearance, tintColor: .init(kind: .panel, color: component.theme.chat.inputPanel.inputBackgroundColor.withMultipliedAlpha(0.7)), transition: transition)
+            self.backgroundView.update(size: size, cornerRadius: size.height * 0.5, isDark: component.theme.overallDarkAppearance, tintColor: .init(kind: .panel, color: component.theme.chat.inputPanel.inputBackgroundColor.withMultipliedAlpha(0.7)),
+                                       isInteractive: true, transition: transition)
             
             if self.nativeTabBar != nil {
                 let finalSize = CGSize(width: availableSize.width, height: 62.0)

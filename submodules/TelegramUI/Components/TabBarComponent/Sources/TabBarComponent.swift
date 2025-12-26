@@ -10,6 +10,7 @@ import LottieComponent
 import UIKitRuntimeUtils
 import BundleIconComponent
 import TextBadgeComponent
+import MetalKit
 
 public final class TabBarComponent: Component {
     public final class Item: Equatable {
@@ -76,6 +77,7 @@ public final class TabBarComponent: Component {
     
     public final class View: UIView, UITabBarDelegate, UIGestureRecognizerDelegate {
         private let backgroundView: GlassBackgroundView
+        private let iconsContainerView: UIView
         private let selectionView: GlassBackgroundView.ContentImageView
         private let contextGestureContainerView: ContextControllerSourceView
         private let nativeTabBar: UITabBar?
@@ -96,6 +98,8 @@ public final class TabBarComponent: Component {
             self.backgroundView.layer.shadowOpacity = 0.15
             self.backgroundView.layer.shadowOffset = CGSize()
             self.backgroundView.layer.shadowColor = UIColor.black.cgColor
+            
+            self.iconsContainerView = UIView()
             
             self.selectionView = GlassBackgroundView.ContentImageView()
             
@@ -152,10 +156,13 @@ public final class TabBarComponent: Component {
                 self.contextGestureContainerView.addSubview(nativeTabBar)
                 nativeTabBar.delegate = self
                 /*let longPressGesture = UILongPressGestureRecognizer(target: self, action: #selector(self.onLongPressGesture(_:)))
-                longPressGesture.delegate = self
-                self.addGestureRecognizer(longPressGesture)*/
+                 longPressGesture.delegate = self
+                 self.addGestureRecognizer(longPressGesture)*/
             } else {
                 self.contextGestureContainerView.addSubview(self.backgroundView)
+                // Add icons container to backgroundView directly to ensure 1:1 alignment with liquid glass bounds
+                self.backgroundView.addSubview(self.iconsContainerView)
+                
                 self.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.onTapGesture(_:))))
                 
                 let longPressGesture = UILongPressGestureRecognizer(target: self, action: #selector(self.onLongPressGesture(_:)))
@@ -303,12 +310,37 @@ public final class TabBarComponent: Component {
         private var initialPanPosition: CGPoint?
         private var isMagnifying = false
         
+        private var glassOutputTexture: MTLTexture?
+        private var iconsTexture: MTLTexture?
+        
         private func updateMagnifyingGlass(location: CGPoint, isActive: Bool) {
             guard let component = self.component else { return }
             
             if isActive, let glassView = self.magnifyingGlassView {
+                // ... setup code ...
                 // Ensure it's on top of background
                 self.bringSubviewToFront(glassView)
+                
+                // Texture Wiring
+                if let liquidView = self.backgroundView.liquidGlassView {
+                   // Ensure output texture
+                   let width = Int(liquidView.bounds.width * liquidView.contentScaleFactor)
+                   let height = Int(liquidView.bounds.height * liquidView.contentScaleFactor)
+                   
+                   if self.glassOutputTexture == nil || self.glassOutputTexture?.width != width || self.glassOutputTexture?.height != height {
+                       let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false)
+                       desc.usage = [.renderTarget, .shaderRead]
+                       self.glassOutputTexture = liquidView.device?.makeTexture(descriptor: desc)
+                   }
+                   
+                   liquidView.additionalOutputTexture = self.glassOutputTexture
+                   glassView.backgroundTexture = self.glassOutputTexture
+                }
+                
+                if self.iconsTexture == nil {
+                    self.updateIconsSnapshot()
+                }
+                glassView.contentTexture = self.iconsTexture
                 
                 var itemSize = CGSize(width: 60.0, height: 60.0)
                 if let firstId = component.items.first?.id, let view = self.itemViews[firstId]?.view {
@@ -367,6 +399,8 @@ public final class TabBarComponent: Component {
             } else {
                 guard let glassView = self.magnifyingGlassView else { return }
                 
+                self.backgroundView.liquidGlassView?.additionalOutputTexture = nil
+                
                 // Find closest item logic (omitted for brevity in description, but retained in replacement if matching)
                 var closestItem: (AnyHashable, CGFloat)?
                 for (id, itemView) in self.itemViews {
@@ -397,6 +431,25 @@ public final class TabBarComponent: Component {
                 self.isMagnifying = false
             }
         }
+        
+        private func updateIconsSnapshot() {
+             let bounds = self.iconsContainerView.bounds
+             if bounds.width < 1 || bounds.height < 1 { return }
+             
+             let renderer = UIGraphicsImageRenderer(bounds: bounds)
+             let image = renderer.image { ctx in
+                 self.iconsContainerView.drawHierarchy(in: bounds, afterScreenUpdates: false)
+             }
+             
+             if let device = MTLCreateSystemDefaultDevice() {
+                 let loader = MTKTextureLoader(device: device)
+                 do {
+                     self.iconsTexture = try loader.newTexture(cgImage: image.cgImage!, options: [.SRGB: true])
+                 } catch {
+                     print("Failed to load icons texture: \(error)")
+                 }
+             }
+         }
         
         @objc private func onPanGesture(_ recognizer: UIPanGestureRecognizer) {
             let location = recognizer.location(in: self)
@@ -637,7 +690,7 @@ public final class TabBarComponent: Component {
                             }
                         } else {
                             //self.contextGestureContainerView.addSubview(itemComponentView)
-                            self.backgroundView.addSubview(itemComponentView)
+                            self.iconsContainerView.addSubview(itemComponentView)
                         }
                     }
                     if self.nativeTabBar != nil {
@@ -699,6 +752,11 @@ public final class TabBarComponent: Component {
                 return finalSize
             } else {
                 transition.setFrame(view: self.contextGestureContainerView, frame: CGRect(origin: CGPoint(), size: size))
+                transition.setFrame(view: self.iconsContainerView, frame: CGRect(origin: CGPoint(), size: size))
+                
+                // Update snapshot of the icons container
+                self.updateIconsSnapshot()
+                
                 return size
             }
         }

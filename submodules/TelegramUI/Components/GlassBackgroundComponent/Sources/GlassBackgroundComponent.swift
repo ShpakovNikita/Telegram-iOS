@@ -302,7 +302,7 @@ public class GlassBackgroundView: UIView {
     }
     
     private let backgroundNode: NavigationBackgroundNode?
-    private let liquidGlassView: LiquidGlassView?
+    public let liquidGlassView: LiquidGlassView?
     
     private let nativeView: UIVisualEffectView?
     private let nativeViewClippingContext: ClippingShapeContext?

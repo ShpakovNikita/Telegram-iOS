@@ -27,8 +27,14 @@ public final class LiquidGlassView: MTKView {
     private var blurHPipelineState: MTLRenderPipelineState?
     private var blurVPipelineState: MTLRenderPipelineState?
     private var blurVPipelineStateHDR: MTLRenderPipelineState?
+    // MRT Pipelines (with attachment 1)
+    private var blurVPipelineStateMRT: MTLRenderPipelineState?
+    private var blurVPipelineStateHDRMRT: MTLRenderPipelineState?
+    
     private var intermediateTexturePass1: MTLTexture?
     private var intermediateTexturePass2: MTLTexture?
+    
+    public var additionalOutputTexture: MTLTexture?
     
     public var cornerRadius: CGFloat = 0.0 {
         didSet {
@@ -91,6 +97,10 @@ public final class LiquidGlassView: MTKView {
     public init() {
         let device = MTLCreateSystemDefaultDevice()
         super.init(frame: .zero, device: device)
+        
+        if let layer = self.layer as? CAMetalLayer {
+            layer.colorspace = CGColorSpace(name: CGColorSpace.extendedSRGB)
+        }
         
         self.isOpaque = false
         self.backgroundColor = .clear
@@ -189,6 +199,34 @@ public final class LiquidGlassView: MTKView {
             self.blurHPipelineState = try device.makeRenderPipelineState(descriptor: blurHDescriptor)
             self.blurVPipelineState = try device.makeRenderPipelineState(descriptor: blurVDescriptor)
             self.blurVPipelineStateHDR = try device.makeRenderPipelineState(descriptor: blurVDescriptorHDR)
+            
+            // Setup MRT Pipelines Descriptors
+            let blurVDescriptorMRT = blurVDescriptor.copy() as! MTLRenderPipelineDescriptor
+            blurVDescriptorMRT.colorAttachments[1].pixelFormat = .rgba16Float // Ensure HDR for attachment
+            blurVDescriptorMRT.colorAttachments[1].isBlendingEnabled = false
+            
+            let blurVDescriptorHDRMRT = blurVDescriptorHDR.copy() as! MTLRenderPipelineDescriptor
+            blurVDescriptorHDRMRT.colorAttachments[1].pixelFormat = .rgba16Float // Ensure HDR for attachment
+            blurVDescriptorHDRMRT.colorAttachments[1].isBlendingEnabled = false
+            
+            // Standard Pipelines (No MRT)
+            // Uses standard function: "liquid_glass_blur_vertical"
+            // No constants needed as we split entry points
+            
+            self.blurVPipelineState = try device.makeRenderPipelineState(descriptor: blurVDescriptor)
+            self.blurVPipelineStateHDR = try device.makeRenderPipelineState(descriptor: blurVDescriptorHDR)
+            
+            // MRT Pipelines
+            // Explicitly load the MRT variant function
+            if let blurVFunctionMRT = library.makeFunction(name: "liquid_glass_blur_vertical_mrt") {
+                blurVDescriptorMRT.fragmentFunction = blurVFunctionMRT
+                self.blurVPipelineStateMRT = try device.makeRenderPipelineState(descriptor: blurVDescriptorMRT)
+                
+                blurVDescriptorHDRMRT.fragmentFunction = blurVFunctionMRT
+                self.blurVPipelineStateHDRMRT = try device.makeRenderPipelineState(descriptor: blurVDescriptorHDRMRT)
+            } else {
+                print("Could not find liquid_glass_blur_vertical_mrt function")
+            }
         } catch {
             print("Failed to create pipeline states: \(error)")
         }
@@ -216,13 +254,23 @@ public final class LiquidGlassView: MTKView {
               let blurHPipelineState = self.blurHPipelineState,
               let blurVPipelineStateSDR = self.blurVPipelineState,
               let blurVPipelineStateHDR = self.blurVPipelineStateHDR,
+              let blurVPipelineStateHDRMRT = self.blurVPipelineStateHDRMRT,
+              let blurVPipelineStateMRT = self.blurVPipelineStateMRT,
               let commandQueue = self.commandQueue,
               let commandBuffer = commandQueue.makeCommandBuffer() else {
             return
         }
         
-        // Select pipeline based on current pixel format
-        let blurVPipelineState = (self.colorPixelFormat == .rgba16Float) ? blurVPipelineStateHDR : blurVPipelineStateSDR
+        // Select pipeline based on current pixel format and MRT requirement
+        let useHDR = (self.colorPixelFormat == .rgba16Float)
+        let useMRT = (self.additionalOutputTexture != nil)
+        
+        let blurVPipelineState: MTLRenderPipelineState
+        if useMRT {
+            blurVPipelineState = useHDR ? blurVPipelineStateHDRMRT : blurVPipelineStateMRT
+        } else {
+            blurVPipelineState = useHDR ? blurVPipelineStateHDR : blurVPipelineStateSDR
+        }
         
         let width = Int(self.bounds.width * self.contentScaleFactor)
         let height = Int(self.bounds.height * self.contentScaleFactor)
@@ -327,6 +375,13 @@ public final class LiquidGlassView: MTKView {
                    clear: false)
                    
         // Pass 3: Vertical blur, texture pass2 -> screen
+        if let outputTexture = self.additionalOutputTexture {
+            finalRenderPassDescriptor.colorAttachments[1].texture = outputTexture
+            finalRenderPassDescriptor.colorAttachments[1].loadAction = .clear
+            finalRenderPassDescriptor.colorAttachments[1].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+            finalRenderPassDescriptor.colorAttachments[1].storeAction = .store
+        }
+
         encodePass(pipeline: blurVPipelineState,
                    outputTexture: nil, 
                    outputPassDescriptor: finalRenderPassDescriptor, 

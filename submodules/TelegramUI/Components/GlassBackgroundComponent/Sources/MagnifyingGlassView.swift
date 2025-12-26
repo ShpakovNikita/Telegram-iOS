@@ -6,7 +6,8 @@ import MetalKit
 private struct MagnifyingGlassUniforms {
     var size: simd_float2
     var cornerRadius: Float
-    var padding: simd_float2
+    var padding: Float
+    var glassRect: simd_float4
 }
 
 private struct Vertex {
@@ -19,7 +20,7 @@ public final class MagnifyingGlassView: MTKView {
     private var pipelineState: MTLRenderPipelineState?
     private var vertexBuffer: MTLBuffer?
     
-    private var currentUniforms = MagnifyingGlassUniforms(size: [0, 0], cornerRadius: 0, padding: [0, 0])
+    private var currentUniforms = MagnifyingGlassUniforms(size: [0, 0], cornerRadius: 0, padding: 0, glassRect: [0, 0, 0, 0])
     
     private var displayLink: CADisplayLink?
     
@@ -43,8 +44,18 @@ public final class MagnifyingGlassView: MTKView {
         self.isOpaque = false
         self.backgroundColor = .clear
         self.clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0)
-        self.colorPixelFormat = .bgra8Unorm
+        self.colorPixelFormat = .rgba16Float // HDR
+        if let layer = self.layer as? CAMetalLayer {
+            layer.colorspace = CGColorSpace(name: CGColorSpace.extendedSRGB)
+        }
         self.framebufferOnly = true
+        
+        // Shadow Setup
+        self.layer.shadowColor = UIColor.black.cgColor
+        self.layer.shadowOffset = CGSize(width: 0.0, height: 10.0)
+        self.layer.shadowRadius = 20.0
+        self.layer.shadowOpacity = 0.3
+        self.layer.shouldRasterize = false
         
         // Use DisplayLink for physics animation
         self.isPaused = true 
@@ -102,7 +113,7 @@ public final class MagnifyingGlassView: MTKView {
         let pipelineDescriptor = MTLRenderPipelineDescriptor()
         pipelineDescriptor.vertexFunction = vertexFunction
         pipelineDescriptor.fragmentFunction = fragmentFunction
-        pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        pipelineDescriptor.colorAttachments[0].pixelFormat = .rgba16Float // HDR
         
         pipelineDescriptor.colorAttachments[0].isBlendingEnabled = true
         pipelineDescriptor.colorAttachments[0].rgbBlendOperation = .add
@@ -123,6 +134,11 @@ public final class MagnifyingGlassView: MTKView {
         let scale = Float(self.contentScaleFactor)
         self.currentUniforms.size = [Float(size.width) * scale, Float(size.height) * scale]
         self.currentUniforms.cornerRadius = Float(cornerRadius) * scale
+        
+        // Update Shadow Path
+        // The view handles transforms, so we just need a path matching the base bounds
+        let path = UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: cornerRadius)
+        self.layer.shadowPath = path.cgPath
         
         // Trigger one frame to ensure visual update if manual
         self.draw()
@@ -154,7 +170,7 @@ public final class MagnifyingGlassView: MTKView {
             displayLink.add(to: .main, forMode: .common)
             self.displayLink = displayLink
         }
-        self.isPaused = false
+        self.isPaused = true // We manually drive the loop from displayLinkTick to sync physics and rendering
     }
     
     @objc private func displayLinkTick() {
@@ -211,8 +227,18 @@ public final class MagnifyingGlassView: MTKView {
             self.displayLink?.invalidate()
             self.displayLink = nil
         }
+        
+        // Manual Draw syncs with physics
+        self.draw()
     }
     
+    // Textures
+    public var backgroundTexture: MTLTexture? {
+        didSet {
+            // Only redraw if we are paused? Or purely rely on displayLink?
+        }
+    }
+    public var contentTexture: MTLTexture?
     override public func draw(_ rect: CGRect) {
         guard let drawable = self.currentDrawable,
               let renderPassDescriptor = self.currentRenderPassDescriptor,
@@ -223,9 +249,27 @@ public final class MagnifyingGlassView: MTKView {
             return
         }
         
+        // Update Glass Rect based on current position and texture size
+        var uniforms = self.currentUniforms
+        if let backgroundTexture = self.backgroundTexture {
+            let scale = CGFloat(self.contentScaleFactor)
+            let textureWidth = CGFloat(backgroundTexture.width)
+            let textureHeight = CGFloat(backgroundTexture.height)
+            
+            // Assuming self.frame matches texture coordinate space (points)
+            // (GlassBackgroundView covers the same area as TabBarComponent usually)
+            
+            if textureWidth > 0 && textureHeight > 0 {
+                let x = (self.frame.origin.x * scale) / textureWidth
+                let y = (self.frame.origin.y * scale) / textureHeight
+                let w = (self.frame.width * scale) / textureWidth
+                let h = (self.frame.height * scale) / textureHeight
+                uniforms.glassRect = [Float(x), Float(y), Float(w), Float(h)]
+            }
+        }
+        
         renderEncoder.setRenderPipelineState(pipelineState)
         
-        var uniforms = self.currentUniforms
         renderEncoder.setVertexBytes(&uniforms, length: MemoryLayout<MagnifyingGlassUniforms>.size, index: 0)
         
         if let vertexBuffer = self.vertexBuffer {
@@ -233,6 +277,14 @@ public final class MagnifyingGlassView: MTKView {
         }
         
         renderEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<MagnifyingGlassUniforms>.size, index: 0)
+        
+        // Bind Textures
+        if let backgroundTexture = self.backgroundTexture {
+            renderEncoder.setFragmentTexture(backgroundTexture, index: 0)
+        }
+        if let contentTexture = self.contentTexture {
+            renderEncoder.setFragmentTexture(contentTexture, index: 1)
+        }
         
         renderEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         

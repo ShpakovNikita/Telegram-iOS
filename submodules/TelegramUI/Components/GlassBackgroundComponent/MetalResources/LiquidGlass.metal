@@ -201,11 +201,10 @@ fragment float4 liquid_glass_blur_horizontal(VertexOut in [[stage_in]],
     return totalColor / totalWeight;
 }
 
-// Pass 3: Vertical Blur
-fragment float4 liquid_glass_blur_vertical(VertexOut in [[stage_in]],
-                                           texture2d<float> texture [[texture(0)]],
-                                           constant Uniforms& uniforms [[buffer(1)]]) {
-    
+// Helper Function (Core Logic)
+float4 liquid_glass_blur_vertical_core(VertexOut in,
+                                       texture2d<float> texture,
+                                       constant Uniforms& uniforms) {
     constexpr sampler textureSampler(mag_filter::linear, min_filter::linear, address::clamp_to_edge);
     
     float2 size = uniforms.size;
@@ -267,4 +266,28 @@ fragment float4 liquid_glass_blur_vertical(VertexOut in [[stage_in]],
     }
     
     return finalColor;
+}
+
+// Entry Point 1: Standard (No MRT)
+fragment float4 liquid_glass_blur_vertical(VertexOut in [[stage_in]],
+                                           texture2d<float> texture [[texture(0)]],
+                                           constant Uniforms& uniforms [[buffer(1)]]) {
+    return liquid_glass_blur_vertical_core(in, texture, uniforms);
+}
+
+// Entry Point 2: MRT (With Attachment)
+struct FragmentOutput {
+    float4 color0 [[color(0)]];
+    float4 color1 [[color(1)]];
+};
+
+fragment FragmentOutput liquid_glass_blur_vertical_mrt(VertexOut in [[stage_in]],
+                                           texture2d<float> texture [[texture(0)]],
+                                           constant Uniforms& uniforms [[buffer(1)]]) {
+    float4 color = liquid_glass_blur_vertical_core(in, texture, uniforms);
+    
+    FragmentOutput out;
+    out.color0 = color;
+    out.color1 = color;
+    return out;
 }

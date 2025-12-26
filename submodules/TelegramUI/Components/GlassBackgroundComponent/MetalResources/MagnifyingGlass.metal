@@ -14,7 +14,8 @@ struct VertexOut {
 struct Uniforms {
     float2 size;
     float cornerRadius;
-    float2 padding;
+    float padding; // Alignment padding
+    float4 glassRect; // normalized x, y, w, h in texture space
 };
 
 float sdRoundedBox(float2 p, float2 b, float r) {
@@ -33,15 +34,44 @@ vertex VertexOut magnifying_glass_vertex(uint vertexID [[vertex_id]],
 }
 
 fragment float4 magnifying_glass_fragment(VertexOut in [[stage_in]],
+                                       texture2d<float> backgroundTexture [[texture(0)]],
+                                       texture2d<float> iconTexture [[texture(1)]],
                                        constant Uniforms &uniforms [[buffer(0)]]) {
+    constexpr sampler textureSampler(mag_filter::linear, min_filter::linear, address::clamp_to_edge);
+
     float2 uv = in.uv;
     float2 size = uniforms.size;
     float2 p = (uv - 0.5) * size;
     float2 b = size * 0.5;
     float d = sdRoundedBox(p, b, uniforms.cornerRadius);
     
-    // Anti-aliasing
+    // Mask
     float alpha = 1.0 - smoothstep(-1.0, 0.0, d);
+    if (alpha <= 0.001) discard_fragment();
     
-    return float4(0.0, 0.0, 0.0, alpha);
+    // Lens Distortion (Flat)
+    // Magnification 1.0 ensures content stays perfectly in place (no parallax)
+    float magnification = 1.12;
+    float2 lensUV = 0.5 + (uv - 0.5) / magnification;
+    
+    // Background Sampling
+    float2 bgUVStart = uniforms.glassRect.xy; // glassRect.xy is start UV (normalized)
+    
+    // uniforms.glassRect.zw is width/height in UV space (normalized)
+    float2 bgUVSize = uniforms.glassRect.zw;
+    float2 bgUV = bgUVStart + lensUV * bgUVSize;
+    
+    float4 bg = backgroundTexture.sample(textureSampler, bgUV);
+    
+    // Icon Sampling
+    // Icons texture matches background size/coords.
+    // So we use same UVs.
+    float4 icon = iconTexture.sample(textureSampler, bgUV);
+    
+    // Composite
+    // Icons on top of background
+    float4 content = mix(bg, icon, icon.a);
+    
+    // Apply Mask
+    return float4(content.rgb, 1.0);
 }

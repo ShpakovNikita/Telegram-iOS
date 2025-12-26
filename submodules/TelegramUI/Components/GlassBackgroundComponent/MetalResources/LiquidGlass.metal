@@ -316,37 +316,66 @@ fragment float4 magnifying_glass_fragment(VertexOut in [[stage_in]],
     float thickness = 24.0;
     float index = 1.2;
     float base_height = thickness * 8.0;
-    float color_mix = 0.0; // Don't mix tint yet, we want clear glass + icon
     
-    // 1. Calculate Refraction (Distorted UVs)
-    float2 distortedUV = calculate_refracted_uv(p, size, radius, thickness, index, base_height);
-    
-    // 2. Sample Background with Refraction
-    float2 screenUV = uniforms.screenRect.xy + (distortedUV * uniforms.screenRect.zw);
-    float4 bg = backgroundTexture.sample(textureSampler, screenUV); // Using sample instead of glass_content_shade to avoid double calculation
-    
-    // 3. Icon Sampling with Refraction AND Scaling
-    // Repurposed field: uniforms.padding holds icon scale (e.g., 1.2)
-    float iconScale = uniforms.padding > 0.1 ? uniforms.padding : 1.0;
-    
-    // Distorted UV is in local 0..1 space. We want to scale "around the center" of this distorted space.
-    float2 centeredRefractedUV = distortedUV - 0.5;
-    float2 scaledRefractedUV = centeredRefractedUV / iconScale + 0.5;
-    
-    // Map local 0..1 to global Icon texture space using iconRect
-    float2 iconGlobalUV = uniforms.iconRect.xy + scaledRefractedUV * uniforms.iconRect.zw;
-    
-    float4 icon = iconTexture.sample(textureSampler, iconGlobalUV);
-    
-    // 4. Composite
-    // Icon on top of Refracted Background
-    float4 content = mix(bg, icon, icon.a);
-    
-    // 5. Hard Masking for Glass Shape
+    // 1. Geometry Calculation (SDF + Normal)
     float2 center = size * 0.5;
     float2 rectHalfSize = (size * 0.5) - radius;
     rectHalfSize = max(rectHalfSize, 0.0);
+    
     float sd = sdfRect(center, rectHalfSize, p, radius);
+    float3 normal = getNormal(sd, thickness, 1.0);
+    float h = height(sd, thickness);
+    float3 incident = float3(0.0, 0.0, -1.0);
+    
+    // 2. Chromatic Aberration Setup
+    // Vary index slightly for RGB channels
+    float aberration = 0.02;
+    float3 indices = float3(index - aberration, index, index + aberration);
+    float3 etas = 1.0 / indices;
+    
+    // Helper to compute refracted UV
+    // Metal 2.3+ supports lambdas in some scopes, but keeping it inline or simple is safer here
+    // R Channel
+    float3 refrR = refract(incident, normal, etas.r);
+    float lenR = (h + base_height) / dot(incident, refrR);
+    float2 uvR = (p + refrR.xy * lenR) / size;
+    
+    // G Channel
+    float3 refrG = refract(incident, normal, etas.g);
+    float lenG = (h + base_height) / dot(incident, refrG);
+    float2 uvG = (p + refrG.xy * lenG) / size;
+    
+    // B Channel
+    float3 refrB = refract(incident, normal, etas.b);
+    float lenB = (h + base_height) / dot(incident, refrB);
+    float2 uvB = (p + refrB.xy * lenB) / size;
+    
+    
+    // 3. Sample Background (RGB separated)
+    float r_bg = backgroundTexture.sample(textureSampler, uniforms.screenRect.xy + uvR * uniforms.screenRect.zw).r;
+    float g_bg = backgroundTexture.sample(textureSampler, uniforms.screenRect.xy + uvG * uniforms.screenRect.zw).g;
+    float b_bg = backgroundTexture.sample(textureSampler, uniforms.screenRect.xy + uvB * uniforms.screenRect.zw).b;
+    
+    // 4. Sample Icon (RGB separated with scaling)
+    float iconScale = uniforms.padding > 0.1 ? uniforms.padding : 1.0;
+    
+    // Calculate Icon UVs
+    float2 iconUvR = uniforms.iconRect.xy + ((uvR - 0.5) / iconScale + 0.5) * uniforms.iconRect.zw;
+    float2 iconUvG = uniforms.iconRect.xy + ((uvG - 0.5) / iconScale + 0.5) * uniforms.iconRect.zw;
+    float2 iconUvB = uniforms.iconRect.xy + ((uvB - 0.5) / iconScale + 0.5) * uniforms.iconRect.zw;
+    
+    float4 iconR = iconTexture.sample(textureSampler, iconUvR);
+    float4 iconG = iconTexture.sample(textureSampler, iconUvG);
+    float4 iconB = iconTexture.sample(textureSampler, iconUvB);
+    
+    // 5. Mix Per-Channel
+    float r = mix(r_bg, iconR.r, iconR.a);
+    float g = mix(g_bg, iconG.g, iconG.a);
+    float b = mix(b_bg, iconB.b, iconB.a);
+    
+    float4 content = float4(r, g, b, 1.0);
+    
+    // 5. Hard Masking for Glass Shape
     if (sd > 0.0) {
         discard_fragment();
     }

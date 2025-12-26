@@ -349,10 +349,8 @@ public final class TabBarComponent: Component {
                    
                    liquidView.additionalOutputTexture = self.glassOutputTexture
                    
-                   // Use Padded Texture as Background for Mag Glass
                    glassView.backgroundTexture = liquidView.paddedCompositeOutputTexture
                    
-                   // Calculate Frame for Mapping
                    let liquidFrameInSelf = liquidView.convert(liquidView.bounds, to: self)
                    let bgFrame = liquidFrameInSelf.insetBy(dx: -20.0, dy: -20.0)
                    glassView.backgroundTextureFrame = bgFrame
@@ -370,43 +368,26 @@ public final class TabBarComponent: Component {
 
                 let finalSize = CGSize(width: itemSize.width + 16.0, height: itemSize.height + 16.0)
                 
-                // Track backend content view
                 glassView.trackedView = self.backgroundView.contentView
-
-                // Vertical constraint: Center vertically in content view
                 let centerY = self.backgroundView.contentView.bounds.height * 0.5
                 
-                // Clamp horizontal position
-                // We use contentView.bounds because we want to clamp to the visible glass area
                 let contentBounds = self.backgroundView.contentView.bounds
                 let minX = contentBounds.minX + finalSize.width * 0.5
                 let maxX = contentBounds.maxX - finalSize.width * 0.5
                 
-                // Convert screen/self location to backgroundView.contentView coordinate space
-                // This allows us to find the "logical" clamp position inside the glass
                 let localLocation = self.convert(location, to: self.backgroundView.contentView)
                 
-                // CRITICAL: Round origin to avoid subpixel rendering
                 let originX = floor(localLocation.x - finalSize.width * 0.5)
-                // Center is sufficient for positioning with transform
                 var centerX = originX + finalSize.width * 0.5
                 
                 centerX = max(minX, min(maxX, centerX))
                 
-                // Pass the LOCAL center to the glass view. The glass view will track this point 
-                // relative to the trackedView (contentView) and project it to self.
                 glassView.trackedLocation = CGPoint(x: centerX, y: centerY)
-                
-                // Update bounds size just in case
                 glassView.bounds = CGRect(origin: .zero, size: finalSize)
-                // note: glassView.center is not set here, it is controlled by physics loop
                 
                 // Ensure physics loop is running to update position
                 glassView.update(panVelocity: .zero)
                 
-                // Only trigger metal redraw if necessary (size change or first show)
-                // Since size is constant here, we can likely skip updates after first frame
-                // But to be safe lets check if we just created it or if we want to ensure it's drawn
                 if glassView.alpha == 0.0 {
                     glassView.update(size: finalSize, cornerRadius: finalSize.height * 0.5)
                 }
@@ -422,7 +403,6 @@ public final class TabBarComponent: Component {
                 
                 self.backgroundView.liquidGlassView?.additionalOutputTexture = nil
                 
-                // Find closest item logic (omitted for brevity in description, but retained in replacement if matching)
                 var closestItem: (AnyHashable, CGFloat)?
                 for (id, itemView) in self.itemViews {
                     guard let itemView = itemView.view else { continue }
@@ -444,10 +424,6 @@ public final class TabBarComponent: Component {
                 
                 UIView.animate(withDuration: 0.2, animations: {
                     glassView.alpha = 0.0
-                }, completion: { [weak self] _ in
-                    if self?.magnifyingGlassView === glassView {
-                       // Keep view for reuse
-                    }
                 })
                 self.isMagnifying = false
             }
@@ -503,13 +479,11 @@ public final class TabBarComponent: Component {
         
         private func applySquashAndStretch(velocity: CGPoint) {
             guard let glassView = self.magnifyingGlassView else { return }
-            // Pass velocity to the view's internal physics engine
             glassView.update(panVelocity: velocity)
         }
         
         private func resetSquashAndStretch() {
              guard let glassView = self.magnifyingGlassView else { return }
-             // Signal physics engine to spring back to identity
              glassView.resetPhysics()
         }
         

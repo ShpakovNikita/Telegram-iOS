@@ -20,6 +20,7 @@ struct Uniforms {
     float2 touchPos;
     float highlight;
     float padding2;
+    float4 iconRect;
 };
 
 vertex VertexOut liquid_glass_vertex(uint vertexID [[vertex_id]],
@@ -63,6 +64,29 @@ fragment float4 liquid_glass_fragment(VertexOut in [[stage_in]],
                                       texture2d<float> texture [[texture(0)]],
                                       constant Uniforms &uniforms [[buffer(1)]]);
 
+float2 calculate_refracted_uv(float2 p,
+                            float2 size,
+                            float radius,
+                            float thickness,
+                            float index,
+                            float base_height) {
+    float2 center = size * 0.5;
+    float2 rectHalfSize = (size * 0.5) - radius;
+    rectHalfSize = max(rectHalfSize, 0.0);
+    
+    float sd = sdfRect(center, rectHalfSize, p, radius);
+    float3 normal = getNormal(sd, thickness, 1.0);
+    
+    float3 incident = float3(0.0, 0.0, -1.0);
+    float3 refract_vec = refract(incident, normal, 1.0/index);
+    float h = height(sd, thickness);
+    
+    float refract_length = (h + base_height) / dot(incident, refract_vec);
+    
+    float2 coord1 = p + refract_vec.xy * refract_length;
+    return coord1 / size;
+}
+
 float4 glass_content_shade(float2 p,
                    float2 size,
                    float radius, 
@@ -74,22 +98,8 @@ float4 glass_content_shade(float2 p,
                    constant Uniforms& uniforms, 
                    texture2d<float> texture, 
                    sampler textureSampler) {
-    float2 center = size * 0.5;
-    float2 rectHalfSize = (size * 0.5) - radius;
-    rectHalfSize = max(rectHalfSize, 0.0);
     
-    float sd = sdfRect(center, rectHalfSize, p, radius);
-    
-    float3 normal = getNormal(sd, thickness, 1.0);
-    
-    float3 incident = float3(0.0, 0.0, -1.0);
-    float3 refract_vec = refract(incident, normal, 1.0/index);
-    float h = height(sd, thickness);
-    
-    float refract_length = (h + base_height) / dot(incident, refract_vec);
-    
-    float2 coord1 = p + refract_vec.xy * refract_length;
-    float2 distortedUV = coord1 / size;
+    float2 distortedUV = calculate_refracted_uv(p, size, radius, thickness, index, base_height);
     float2 screenUV = uniforms.screenRect.xy + (distortedUV * uniforms.screenRect.zw);
     
     float4 bg_col = texture.sample(textureSampler, screenUV);
@@ -290,4 +300,62 @@ fragment FragmentOutput liquid_glass_blur_vertical_mrt(VertexOut in [[stage_in]]
     out.color0 = color;
     out.color1 = color;
     return out;
+}
+
+fragment float4 magnifying_glass_fragment(VertexOut in [[stage_in]],
+                                       texture2d<float> backgroundTexture [[texture(0)]],
+                                       texture2d<float> iconTexture [[texture(1)]],
+                                       constant Uniforms &uniforms [[buffer(1)]]) {
+    
+    constexpr sampler textureSampler(mag_filter::linear, min_filter::linear, address::clamp_to_edge);
+    
+    float2 size = uniforms.size;
+    float2 p = in.texCoord * size;
+    float radius = uniforms.cornerRadius;
+    
+    float thickness = 24.0;
+    float index = 1.2;
+    float base_height = thickness * 8.0;
+    float color_mix = 0.0; // Don't mix tint yet, we want clear glass + icon
+    
+    // 1. Calculate Refraction (Distorted UVs)
+    float2 distortedUV = calculate_refracted_uv(p, size, radius, thickness, index, base_height);
+    
+    // 2. Sample Background with Refraction
+    float2 screenUV = uniforms.screenRect.xy + (distortedUV * uniforms.screenRect.zw);
+    float4 bg = backgroundTexture.sample(textureSampler, screenUV); // Using sample instead of glass_content_shade to avoid double calculation
+    
+    // 3. Icon Sampling with Refraction AND Scaling
+    // Repurposed field: uniforms.padding holds icon scale (e.g., 1.2)
+    float iconScale = uniforms.padding > 0.1 ? uniforms.padding : 1.0;
+    
+    // Distorted UV is in local 0..1 space. We want to scale "around the center" of this distorted space.
+    float2 centeredRefractedUV = distortedUV - 0.5;
+    float2 scaledRefractedUV = centeredRefractedUV / iconScale + 0.5;
+    
+    // Map local 0..1 to global Icon texture space using iconRect
+    float2 iconGlobalUV = uniforms.iconRect.xy + scaledRefractedUV * uniforms.iconRect.zw;
+    
+    float4 icon = iconTexture.sample(textureSampler, iconGlobalUV);
+    
+    // 4. Composite
+    // Icon on top of Refracted Background
+    float4 content = mix(bg, icon, icon.a);
+    
+    // 5. Hard Masking for Glass Shape
+    float2 center = size * 0.5;
+    float2 rectHalfSize = (size * 0.5) - radius;
+    rectHalfSize = max(rectHalfSize, 0.0);
+    float sd = sdfRect(center, rectHalfSize, p, radius);
+    if (sd > 0.0) {
+        discard_fragment();
+    }
+    
+    return float4(content.rgb, 1.0);
+}
+
+fragment float4 simple_copy_fragment(VertexOut in [[stage_in]],
+                                     texture2d<float> texture [[texture(0)]]) {
+    constexpr sampler textureSampler(mag_filter::linear, min_filter::linear);
+    return texture.sample(textureSampler, in.texCoord);
 }

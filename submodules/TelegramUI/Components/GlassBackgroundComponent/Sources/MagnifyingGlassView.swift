@@ -3,11 +3,17 @@ import UIKit
 import Metal
 import MetalKit
 
+// Must match SimpleUniforms in LiquidGlass.metal
 private struct MagnifyingGlassUniforms {
     var size: simd_float2
+    var tintColor: simd_float4
     var cornerRadius: Float
-    var padding: Float
-    var glassRect: simd_float4
+    var padding: Float // Repurposed for iconScale
+    var screenRect: simd_float4
+    var touchPos: simd_float2
+    var highlight: Float
+    var padding2: Float
+    var iconRect: simd_float4
 }
 
 private struct Vertex {
@@ -20,9 +26,20 @@ public final class MagnifyingGlassView: MTKView {
     private var pipelineState: MTLRenderPipelineState?
     private var vertexBuffer: MTLBuffer?
     
-    private var currentUniforms = MagnifyingGlassUniforms(size: [0, 0], cornerRadius: 0, padding: 0, glassRect: [0, 0, 0, 0])
-    
+    private var currentUniforms = MagnifyingGlassUniforms(
+        size: [0, 0],
+        tintColor: [0, 0, 0, 0],
+        cornerRadius: 0,
+        padding: 1.2, // Default Icon Scale
+        screenRect: [0, 0, 0, 0],
+        touchPos: [0, 0],
+        highlight: 0,
+        padding2: 0,
+        iconRect: [0, 0, 0, 0]
+    )
+
     private var displayLink: CADisplayLink?
+
     
     // Physics State
     private var scaleState: simd_float2 = [1.0, 1.0]
@@ -104,7 +121,18 @@ public final class MagnifyingGlassView: MTKView {
             return
         }
         
-        guard let vertexFunction = library.makeFunction(name: "magnifying_glass_vertex"),
+        // Reusing vertex function from LiquidGlass or maintaining compatible one
+        // LiquidGlass also has "liquid_glass_vertex". We can use that if struct matches.
+        // VertexIn in LiquidGlass: float4 position, float2 texCoord.
+        // Our Vertex struct: position, uv.
+        // Match names: texCoord vs uv.
+        // To be safe, let's use "liquid_glass_vertex" and rename our swift struct/field to match if needed, 
+        // OR rely on attribute index mapping.
+        // LiquidGlass.metal uses [[buffer(0)]] for vertex array.
+        // LiquidGlass VertexIn: position, texCoord.
+        // We will match Vertex struct.
+        
+        guard let vertexFunction = library.makeFunction(name: "liquid_glass_vertex"),
               let fragmentFunction = library.makeFunction(name: "magnifying_glass_fragment") else {
             print("Could not find shader functions")
             return
@@ -136,7 +164,6 @@ public final class MagnifyingGlassView: MTKView {
         self.currentUniforms.cornerRadius = Float(cornerRadius) * scale
         
         // Update Shadow Path
-        // The view handles transforms, so we just need a path matching the base bounds
         let path = UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: cornerRadius)
         self.layer.shadowPath = path.cgPath
         
@@ -159,7 +186,6 @@ public final class MagnifyingGlassView: MTKView {
     }
     
     public func resetPhysics() {
-        // Reset target to identity, spring will oscillate back
         self.targetScale = [1.0, 1.0]
         self.ensureDisplayLink()
     }
@@ -170,13 +196,12 @@ public final class MagnifyingGlassView: MTKView {
             displayLink.add(to: .main, forMode: .common)
             self.displayLink = displayLink
         }
-        self.isPaused = true // We manually drive the loop from displayLinkTick to sync physics and rendering
+        self.isPaused = true
     }
     
     @objc private func displayLinkTick() {
-        let dt: Float = 1.0 / 60.0 // Approximation, could use displayLink.duration
+        let dt: Float = 1.0 / 60.0
         
-        // Spring physics: F = -k*x - c*v
         let displacement = self.scaleState - self.targetScale
         let springForce = -self.stiffness * displacement
         let dampingForce = -self.damping * self.scaleVelocity
@@ -185,21 +210,13 @@ public final class MagnifyingGlassView: MTKView {
         self.scaleVelocity += acceleration * dt
         self.scaleState += self.scaleVelocity * dt
         
-        // Calculate Physics Transform
         var finalTransform = CGAffineTransform(scaleX: CGFloat(self.scaleState.x), y: CGFloat(self.scaleState.y))
         
-        // Apply Tracking (Parent Transform Sync)
         if let trackedView = self.trackedView, let superview = self.superview {
-            // Use presentation layer for smooth animation tracking
             let presentationLayer = trackedView.layer.presentation() ?? trackedView.layer
             let presentationTransform = presentationLayer.affineTransform()
             
-            // Combine scales (Physics * Tracked)
             finalTransform = presentationTransform.concatenating(finalTransform)
-            
-            // Update Center Position
-            // To properly track, we need to convert the tracked point from the trackedView's current state to superview.
-            // Converting from presentation layer to window, then to superview provides the current visual position.
             
             let targetPointInWindow = presentationLayer.convert(self.trackedLocation, to: nil)
             let targetPointInSuperview = superview.layer.convert(targetPointInWindow, from: nil)
@@ -209,10 +226,8 @@ public final class MagnifyingGlassView: MTKView {
         
         self.transform = finalTransform
         
-        // Stop if settled AND tracking is idle
         let physicsSettled = length(self.scaleVelocity) < 0.001 && length(displacement) < 0.001 && length(self.targetScale - simd_float2(1,1)) < 0.001
         
-        // Heuristic: If we are tracking, we only stop if the tracked view is not animating and physics is done.
         var isTrackingActive = false
         if self.trackedView != nil {
              isTrackingActive = (self.trackedView?.layer.animationKeys()?.count ?? 0) > 0
@@ -222,23 +237,19 @@ public final class MagnifyingGlassView: MTKView {
             self.scaleState = [1.0, 1.0]
             self.scaleVelocity = [0.0, 0.0]
             self.targetScale = [1.0, 1.0]
-            // Only stop if we are truly done
             self.isPaused = true
             self.displayLink?.invalidate()
             self.displayLink = nil
         }
         
-        // Manual Draw syncs with physics
         self.draw()
     }
     
     // Textures
-    public var backgroundTexture: MTLTexture? {
-        didSet {
-            // Only redraw if we are paused? Or purely rely on displayLink?
-        }
-    }
+    public var backgroundTexture: MTLTexture?
+    public var backgroundTextureFrame: CGRect?
     public var contentTexture: MTLTexture?
+    
     override public func draw(_ rect: CGRect) {
         guard let drawable = self.currentDrawable,
               let renderPassDescriptor = self.currentRenderPassDescriptor,
@@ -249,34 +260,62 @@ public final class MagnifyingGlassView: MTKView {
             return
         }
         
-        // Update Glass Rect based on current position and texture size
+        // Update Glass Rect
         var uniforms = self.currentUniforms
         if let backgroundTexture = self.backgroundTexture {
             let scale = CGFloat(self.contentScaleFactor)
-            let textureWidth = CGFloat(backgroundTexture.width)
-            let textureHeight = CGFloat(backgroundTexture.height)
             
-            // Assuming self.frame matches texture coordinate space (points)
-            // (GlassBackgroundView covers the same area as TabBarComponent usually)
+            if let bgFrame = self.backgroundTextureFrame {
+                let dX = self.frame.origin.x - bgFrame.origin.x
+                let dY = self.frame.origin.y - bgFrame.origin.y
+                
+                let uvX = dX / bgFrame.width
+                let uvY = dY / bgFrame.height
+                let uvW = self.frame.width / bgFrame.width
+                let uvH = self.frame.height / bgFrame.height
+                
+                uniforms.screenRect = [Float(uvX), Float(uvY), Float(uvW), Float(uvH)]
+            } else {
+                let textureWidth = CGFloat(backgroundTexture.width)
+                let textureHeight = CGFloat(backgroundTexture.height)
+                
+                if textureWidth > 0 && textureHeight > 0 {
+                    let x = (self.frame.origin.x * scale) / textureWidth
+                    let y = (self.frame.origin.y * scale) / textureHeight
+                    let w = (self.frame.width * scale) / textureWidth
+                    let h = (self.frame.height * scale) / textureHeight
+                    
+                    uniforms.screenRect = [Float(x), Float(y), Float(w), Float(h)]
+                }
+            }
+        }
+        
+        if let contentTexture = self.contentTexture {
+            let scale = CGFloat(self.contentScaleFactor)
+            let textureWidth = CGFloat(contentTexture.width)
+            let textureHeight = CGFloat(contentTexture.height)
             
             if textureWidth > 0 && textureHeight > 0 {
                 let x = (self.frame.origin.x * scale) / textureWidth
                 let y = (self.frame.origin.y * scale) / textureHeight
                 let w = (self.frame.width * scale) / textureWidth
                 let h = (self.frame.height * scale) / textureHeight
-                uniforms.glassRect = [Float(x), Float(y), Float(w), Float(h)]
+                
+                uniforms.iconRect = [Float(x), Float(y), Float(w), Float(h)]
             }
         }
+        // Tint Color mapping (unused currently but consistent)
+        // uniforms.tintColor...
         
         renderEncoder.setRenderPipelineState(pipelineState)
         
-        renderEncoder.setVertexBytes(&uniforms, length: MemoryLayout<MagnifyingGlassUniforms>.size, index: 0)
+        renderEncoder.setVertexBytes(&uniforms, length: MemoryLayout<MagnifyingGlassUniforms>.size, index: 1) // Buffer 1 matches LiquidGlass conventions
         
         if let vertexBuffer = self.vertexBuffer {
-            renderEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 1)
+            renderEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0) // Buffer 0 matches LiquidGlass vertex function expectation
         }
         
-        renderEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<MagnifyingGlassUniforms>.size, index: 0)
+        renderEncoder.setFragmentBytes(&uniforms, length: MemoryLayout<MagnifyingGlassUniforms>.size, index: 1)
         
         // Bind Textures
         if let backgroundTexture = self.backgroundTexture {

@@ -78,6 +78,9 @@ public final class TabBarComponent: Component {
     public final class View: UIView, UITabBarDelegate, UIGestureRecognizerDelegate {
         private let backgroundView: GlassBackgroundView
         private let iconsContainerView: UIView
+        
+        private var validLayout: CGSize?
+        private var isDraggingSelection: Bool = false
         private let selectionView: GlassBackgroundView.ContentImageView
         private let contextGestureContainerView: ContextControllerSourceView
         private let nativeTabBar: UITabBar?
@@ -142,6 +145,9 @@ public final class TabBarComponent: Component {
             } else {
                 self.nativeTabBar = nil
             }
+            
+            self.validLayout = nil
+            self.isDraggingSelection = false
             
             super.init(frame: frame)
             
@@ -331,10 +337,25 @@ public final class TabBarComponent: Component {
                        let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false)
                        desc.usage = [.renderTarget, .shaderRead]
                        self.glassOutputTexture = liquidView.device?.makeTexture(descriptor: desc)
+                       
+                       // Create Padded Composite Texture
+                       // 10px padding on each side = 20px total extra
+                       let pWidth = width + Int(20.0 * liquidView.contentScaleFactor)
+                       let pHeight = height + Int(20.0 * liquidView.contentScaleFactor)
+                       let pDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: pWidth, height: pHeight, mipmapped: false)
+                       pDesc.usage = [.renderTarget, .shaderRead]
+                       liquidView.paddedCompositeOutputTexture = liquidView.device?.makeTexture(descriptor: pDesc)
                    }
                    
                    liquidView.additionalOutputTexture = self.glassOutputTexture
-                   glassView.backgroundTexture = self.glassOutputTexture
+                   
+                   // Use Padded Texture as Background for Mag Glass
+                   glassView.backgroundTexture = liquidView.paddedCompositeOutputTexture
+                   
+                   // Calculate Frame for Mapping
+                   let liquidFrameInSelf = liquidView.convert(liquidView.bounds, to: self)
+                   let bgFrame = liquidFrameInSelf.insetBy(dx: -20.0, dy: -20.0)
+                   glassView.backgroundTextureFrame = bgFrame
                 }
                 
                 if self.iconsTexture == nil {
@@ -460,12 +481,21 @@ public final class TabBarComponent: Component {
                 self.initialPanPosition = location
                 self.updateMagnifyingGlass(location: location, isActive: true)
                 self.applySquashAndStretch(velocity: velocity)
+                
+                self.isDraggingSelection = true
+                self.updateSelectionState(transition: .easeInOut(duration: 0.2))
+                
             case .changed:
                 self.updateMagnifyingGlass(location: location, isActive: true)
                 self.applySquashAndStretch(velocity: velocity)
+                
             case .ended, .cancelled:
                 self.updateMagnifyingGlass(location: location, isActive: false)
                 self.resetSquashAndStretch()
+                
+                self.isDraggingSelection = false
+                self.updateSelectionState(transition: .easeInOut(duration: 0.2))
+                
             default:
                 break
             }
@@ -557,6 +587,8 @@ public final class TabBarComponent: Component {
         }
         
         func update(component: TabBarComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
+            self.validLayout = availableSize
+            
             let innerInset: CGFloat = 3.0
             
             let availableSize = CGSize(width: min(500.0, availableSize.width), height: availableSize.height)
@@ -758,6 +790,41 @@ public final class TabBarComponent: Component {
                 self.updateIconsSnapshot()
                 
                 return size
+            }
+        }
+        
+        private func updateSelectionState(transition: ComponentTransition) {
+            guard let component = self.component, let availableSize = self.validLayout else {
+                return
+            }
+            
+            // Toggle selection view visibility
+            let alpha: CGFloat = self.isDraggingSelection ? 0.0 : 1.0
+            transition.setAlpha(view: self.selectionView, alpha: alpha)
+            
+            // Recalculate basic layout parameters to update items
+            let innerInset: CGFloat = 3.0
+            let layoutSize = CGSize(width: min(500.0, availableSize.width), height: availableSize.height)
+            var itemSize = CGSize(width: floor((layoutSize.width - innerInset * 2.0) / CGFloat(component.items.count)), height: 56.0)
+            itemSize.width = min(94.0, itemSize.width)
+            
+            for (id, itemView) in self.itemViews {
+                guard let item = component.items.first(where: { $0.id == id }) else { continue }
+                
+                // Determine if this item is selected
+                let isActuallySelected = component.selectedId == item.id
+                let isVisuallySelected = isActuallySelected && !self.isDraggingSelection
+                
+                let _ = itemView.update(
+                    transition: transition,
+                    component: AnyComponent(ItemComponent(
+                        item: item,
+                        theme: component.theme,
+                        isSelected: self.nativeTabBar == nil ? isVisuallySelected : false
+                    )),
+                    environment: {},
+                    containerSize: itemSize
+                )
             }
         }
     }

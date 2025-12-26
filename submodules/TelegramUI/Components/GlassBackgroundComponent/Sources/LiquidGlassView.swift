@@ -14,6 +14,7 @@ private struct LiquidGlassUniforms {
     var touchPos: simd_float2
     var highlight: Float
     var padding2: Float
+    var iconRect: simd_float4
 }
 
 private struct LiquidGlassVertex {
@@ -30,11 +31,13 @@ public final class LiquidGlassView: MTKView {
     // MRT Pipelines (with attachment 1)
     private var blurVPipelineStateMRT: MTLRenderPipelineState?
     private var blurVPipelineStateHDRMRT: MTLRenderPipelineState?
+    private var copyPipelineState: MTLRenderPipelineState?
     
     private var intermediateTexturePass1: MTLTexture?
     private var intermediateTexturePass2: MTLTexture?
     
     public var additionalOutputTexture: MTLTexture?
+    public var paddedCompositeOutputTexture: MTLTexture?
     
     public var cornerRadius: CGFloat = 0.0 {
         didSet {
@@ -226,6 +229,25 @@ public final class LiquidGlassView: MTKView {
                 self.blurVPipelineStateHDRMRT = try device.makeRenderPipelineState(descriptor: blurVDescriptorHDRMRT)
             } else {
                 print("Could not find liquid_glass_blur_vertical_mrt function")
+                self.blurVPipelineStateHDRMRT = try device.makeRenderPipelineState(descriptor: blurVDescriptorHDRMRT)
+            }
+            
+            // Copy Pipeline
+            if let copyFunction = library.makeFunction(name: "simple_copy_fragment") {
+                let copyDescriptor = MTLRenderPipelineDescriptor()
+                copyDescriptor.vertexFunction = vertexFunction
+                copyDescriptor.fragmentFunction = copyFunction
+                copyDescriptor.colorAttachments[0].pixelFormat = .rgba16Float // We use float for composite
+                // Blending enabled for compositing glass over background
+                copyDescriptor.colorAttachments[0].isBlendingEnabled = true
+                copyDescriptor.colorAttachments[0].rgbBlendOperation = .add
+                copyDescriptor.colorAttachments[0].alphaBlendOperation = .add
+                copyDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+                copyDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+                copyDescriptor.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+                copyDescriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+                
+                self.copyPipelineState = try device.makeRenderPipelineState(descriptor: copyDescriptor)
             }
         } catch {
             print("Failed to create pipeline states: \(error)")
@@ -323,7 +345,8 @@ public final class LiquidGlassView: MTKView {
             screenRect: screenRectIdx,
             touchPos: touchPosPixels,
             highlight: Float(self.highlightIntensity),
-            padding2: 0
+            padding2: 0,
+            iconRect: simd_float4(0, 0, 0, 0)
         )
         
         // Helper to encode a pass
@@ -388,6 +411,89 @@ public final class LiquidGlassView: MTKView {
                    inputTexture: intermediateTexturePass2, 
                    clear: false)
         
+        if let paddedTexture = self.paddedCompositeOutputTexture, let copyPipelineState = self.copyPipelineState {
+            let passDescriptor = MTLRenderPassDescriptor()
+            passDescriptor.colorAttachments[0].texture = paddedTexture
+            passDescriptor.colorAttachments[0].loadAction = .clear // Or .dontCare since we overwrite
+            passDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+            passDescriptor.colorAttachments[0].storeAction = .store
+            
+            if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) {
+                encoder.setRenderPipelineState(copyPipelineState)
+                encoder.setVertexBytes(&uniforms, length: MemoryLayout<LiquidGlassUniforms>.stride, index: 1)
+                encoder.setFragmentBytes(&uniforms, length: MemoryLayout<LiquidGlassUniforms>.stride, index: 1)
+                
+                // 1. Draw Background (Padded area from Global Context)
+                if let globalTexture = LiquidGlassGlobalContext.shared.texture, globalFrame.width > 0, globalFrame.height > 0 {
+                    // Calculate UVs for the padded area
+                    // Padded Rect in Window: boundsInWindow.insetBy(-20)
+                    // We need to map this to GlobalFrame (which corresponds to globalTexture 0..1)
+                    
+                    let paddedWindowRect = boundsInWindow.insetBy(dx: -20.0, dy: -20.0)
+                    
+                    let uvX = Float((paddedWindowRect.origin.x - globalFrame.origin.x) / globalFrame.width)
+                    let uvY = Float((paddedWindowRect.origin.y - globalFrame.origin.y) / globalFrame.height)
+                    let uvW = Float(paddedWindowRect.width / globalFrame.width)
+                    let uvH = Float(paddedWindowRect.height / globalFrame.height)
+                    
+                    let bgVertices = [
+                        LiquidGlassVertex(position: simd_float4(-1, -1, 0, 1), texCoord: simd_float2(uvX, uvY + uvH)),
+                        LiquidGlassVertex(position: simd_float4( 1, -1, 0, 1), texCoord: simd_float2(uvX + uvW, uvY + uvH)),
+                        LiquidGlassVertex(position: simd_float4(-1,  1, 0, 1), texCoord: simd_float2(uvX, uvY)),
+                        LiquidGlassVertex(position: simd_float4( 1,  1, 0, 1), texCoord: simd_float2(uvX + uvW, uvY))
+                    ]
+                    
+                    encoder.setVertexBytes(bgVertices, length: bgVertices.count * MemoryLayout<LiquidGlassVertex>.stride, index: 0)
+                    encoder.setFragmentTexture(globalTexture, index: 0)
+                    encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+                }
+                
+                // 2. Draw Glass Output (Centered)
+                if let glassOutput = self.additionalOutputTexture {
+                    // Calculate Positions for Inner Quad (-1..1 space)
+                    // Total Size = (Width+40, Height+40) assuming 1:1 scale for math simplcity (pixels)
+                    // Padding = 20
+                    // NDC is -1 to 1.
+                    // Left edge (-1) corresponds to 0. Right edge (1) corresponds to Width.
+                    // We want to inset by Padding.
+                    // X0 = -1 + 2 * (Padding / TotalWidth)
+                    // X1 =  1 - 2 * (Padding / TotalWidth)
+                     
+                    let totalWidth = Float(width) + 40.0 * Float(self.contentScaleFactor)
+                    let totalHeight = Float(height) + 40.0 * Float(self.contentScaleFactor)
+                    let padding = 20.0 * Float(self.contentScaleFactor)
+                    
+                    // Avoid divide by zero
+                    if totalWidth > 0 && totalHeight > 0 {
+                         let ndcMinX = -1.0 + 2.0 * (padding / totalWidth)
+                         let ndcMaxX =  1.0 - 2.0 * (padding / totalWidth)
+                         // Y in Metal is Bottom(-1) to Top(1)? Or Top(-1) to Bottom(1)?
+                         // Standard strip: (-1, -1) is Bottom-Left or Top-Left depending on projection.
+                         // In our case:
+                         // Vertex 0: (-1, -1) -> uv (0, 1) Bottom Left
+                         // Vertex 2: (-1, 1) -> uv (0, 0) Top Left
+                         // So Y=-1 is Bottom. Padding from Bottom is same logic.
+                         
+                         let ndcMinY = -1.0 + 2.0 * (padding / totalHeight)
+                         let ndcMaxY =  1.0 - 2.0 * (padding / totalHeight)
+                        
+                        let glassVertices = [
+                            LiquidGlassVertex(position: simd_float4(ndcMinX, ndcMinY, 0, 1), texCoord: simd_float2(0, 1)),
+                            LiquidGlassVertex(position: simd_float4(ndcMaxX, ndcMinY, 0, 1), texCoord: simd_float2(1, 1)),
+                            LiquidGlassVertex(position: simd_float4(ndcMinX, ndcMaxY, 0, 1), texCoord: simd_float2(0, 0)),
+                            LiquidGlassVertex(position: simd_float4(ndcMaxX, ndcMaxY, 0, 1), texCoord: simd_float2(1, 0))
+                        ]
+                        
+                        encoder.setVertexBytes(glassVertices, length: glassVertices.count * MemoryLayout<LiquidGlassVertex>.stride, index: 0)
+                        encoder.setFragmentTexture(glassOutput, index: 0)
+                        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+                    }
+                }
+                
+                encoder.endEncoding()
+            }
+        }
+
         commandBuffer.present(drawable)
         commandBuffer.commit()
     }

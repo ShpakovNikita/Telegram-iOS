@@ -241,6 +241,9 @@ public final class LiquidGlassGlobalContext: NSObject {
         
         guard var captureRect = unionRect else { return }
         
+        // Expand by 20px on all sides to provide padding for the glass effect
+        captureRect = captureRect.insetBy(dx: -20.0, dy: -20.0)
+        
         captureRect = captureRect.intersection(window.bounds)
         if captureRect.isEmpty { return }
         
